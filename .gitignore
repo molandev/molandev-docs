@@ -1,0 +1,7 @@
+# VitePress 文档相关
+.vitepress/dist
+.vitepress/cache
+.temp
+
+# 依赖
+node_modules/
