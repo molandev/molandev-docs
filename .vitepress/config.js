@@ -211,7 +211,7 @@ export default {
 
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2024-present MolanDev'
+      copyright: 'Copyright © 2024-present MolanDev | <a href="https://beian.miit.gov.cn/" target="_blank">豫ICP备2025140146号-2</a>'
     },
 
     search: {
