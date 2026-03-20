@@ -1,6 +1,6 @@
 # 登录策略
 
-MolanDev Cloud 提供了丰富的登录策略配置，用于控制用户登录行为和安全策略。
+MolanDev Backend 提供了丰富的登录策略配置，用于控制用户登录行为和安全策略。
 
 ## 配置方式
 
@@ -327,7 +327,7 @@ if (firstLogin && !forceUpdate) {
 
 ## 总结
 
-MolanDev Cloud 的登录策略提供了：
+MolanDev Backend 的登录策略提供了：
 
 - ✅ 灵活的会话管理
 - ✅ 多端登录控制

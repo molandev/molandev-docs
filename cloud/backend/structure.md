@@ -1,68 +1,50 @@
 # 项目结构
 
-MolanDev Cloud 采用 Maven 多模块结构，清晰的模块划分便于开发和维护。
+MolanDev Backend 采用 Maven 多模块结构，清晰的模块划分便于开发和维护。
 
 ## 整体结构
 
 ```
-molandev-cloud/
-├── cloud-backend/                     # 后端代码
-│   ├── basic-apis/          # API 接口定义
-│   │   ├── base-api/                  # 基础 API
-│   │   ├── sys-api/                   # 系统服务 API
-│   │   ├── file-api/                  # 文件服务 API
-│   │   ├── msg-api/                   # 消息服务 API
-│   │   └── task-api/                  # 任务服务 API
-│   ├── basic-apps/          # 应用服务
-│   │   ├── gateway-service/           # 网关服务
-│   │   ├── sys-service/               # 系统服务
-│   │   ├── file-service/              # 文件服务
-│   │   ├── msg-service/               # 消息服务
-│   │   └── task-service/              # 任务服务
-│   ├── cloud-common/                  # 公共模块
-│   ├── codegen-util/                  # 代码生成器
-│   └── merge-service/                 # 单体合并模块
-├── cloud-frontend/                    # 前端代码
-├── cloud-deploy/                      # 部署配置
-│   ├── configs/                       # 配置文件
-│   └── middleware/                    # 中间件配置
-└── docs/                              # 文档
+molandev-backend/
+├── molandev-apis/                     # API 接口定义（Feign 接口）
+├── molandev-common/                   # 公共模块
+├── molandev-base/                     # 基础服务（用户/角色/菜单/部门/文件/消息/任务）
+├── molandev-ai/                       # AI 服务（知识库管理）
+├── molandev-gateway/                  # 微服务网关
+├── molandev-standalone-service/       # 单体模式启动入口
+└── deploy/                            # 部署配置
+    ├── compose/                       # Docker Compose 配置
+    ├── configs/                       # 配置文件
+    └── sql/                           # 数据库脚本
 ```
+
+::: tip 设计理念
+服务拆分不再按功能垂直划分，而是按业务域聚合。`molandev-base` 整合了系统管理、文件、消息、任务等基础能力，`molandev-ai` 专注于 AI 相关业务。单体模式通过 `molandev-standalone-service` 启动，微服务模式通过 `molandev-gateway` + 各服务独立部署。
+:::
 
 ## 后端模块详解
 
-### 1. API 模块 (basic-apis)
+### 1. API 模块 (molandev-apis)
 
 **职责：** 定义服务间调用的 Feign 接口和 DTO。
 
 **特点：**
 - ✅ 接口定义与实现分离
-- ✅ 支持单体和微服务模式
+- ✅ 支持单体和微服务双模
 - ✅ 统一的 API 规范
 
 **目录结构：**
 
 ```
-base-api/
-└── src/main/java/com/molandev/cloud/api/base/
-    └── ... (基础 API 定义)
-```
-
-**sys-api 示例：**
-
-```
-sys-api/
-├── src/main/java/com/molandev/cloud/api/sys/
-│   ├── client/                      # Feign 客户端
-│   │   ├── SysUserClient.java      # 用户服务接口
-│   │   ├── SysRoleClient.java      # 角色服务接口
-│   │   └── SysMenuClient.java      # 菜单服务接口
-│   ├── dto/                         # 数据传输对象
-│   │   ├── request/                # 请求 DTO
-│   │   └── response/               # 响应 DTO
-│   └── fallback/                    # 降级处理
-│       └── SysUserClientFallback.java
-└── pom.xml
+molandev-apis/
+└── src/main/java/com/molandev/api/
+    ├── sys/                        # 系统相关 API
+    │   └── user/
+    │       └── SysUserApi.java     # 用户服务接口
+    ├── msg/                        # 消息相关 API
+    │   └── MsgSendApi.java         # 消息发送接口
+    └── dto/                        # 数据传输对象
+        └── UserDto.java
 ```
 
 **示例代码：**
@@ -70,57 +52,111 @@ sys-api/
 ```java
 // Feign 接口定义
 @FeignClient(
-    name = "system-service",
-    path = "/system/user",
-    fallback = SysUserClientFallback.class
+    name = "${molandev.service.base:molandev-base}", 
+    contextId = "sysUserApi", 
+    path = "/feign/user"
 )
-public interface SysUserClient {
-    
-    @GetMapping("/list")
-    R<Page<SysUserDTO>> list(@RequestParam SysUserQuery query);
-    
-    @GetMapping("/{id}")
-    R<SysUserDTO> getById(@PathVariable Long id);
-    
-    @PostMapping
-    R<Void> save(@RequestBody SysUserDTO user);
-    
-    @PutMapping
-    R<Void> update(@RequestBody SysUserDTO user);
-    
-    @DeleteMapping("/{id}")
-    R<Void> delete(@PathVariable Long id);
+public interface SysUserApi {
+
+    @GetMapping("/admin")
+    UserDto getAdmin(@RequestParam("id") String id);
 }
 ```
 
-### 2. 应用服务 (basic-apps)
+::: tip 接口即服务
+通过 `molandev-rpc` 框架，Feign 接口在单体模式下自动转为本地调用，微服务模式下为远程 HTTP 调用，业务代码无需感知差异。
+:::
 
-**职责：** 具体的业务服务实现。
+### 2. 应用服务模块
 
-#### 2.1 网关服务 (gateway-service)
+#### 2.1 基础服务 (molandev-base)
 
-**职责：** 统一入口、路由转发、认证鉴权。
+**职责：** 基础业务服务，整合了系统管理、文件、消息、任务等功能。
 
-**技术栈：**
-- Spring Cloud Gateway
-- Spring Security
-- Redis
+**包含功能：**
+- 用户管理、角色管理、菜单管理、部门管理
+- 文件上传下载、回收站机制
+- 消息发送、站内信、WebSocket 推送
+- 定时任务调度
 
 **目录结构：**
 
 ```
-gateway-service/
-├── src/main/java/com/molandev/cloud/gateway/
-│   ├── config/                      # 配置类
-│   │   ├── SecurityConfig.java     # 安全配置
-│   │   └── GatewayConfig.java      # 网关配置
-│   ├── filter/                      # 过滤器
-│   │   ├── AuthFilter.java         # 认证过滤器
-│   │   └── LogFilter.java          # 日志过滤器
-│   ├── handler/                     # 处理器
-│   │   ├── AuthHandler.java        # 认证处理
-│   │   └── ExceptionHandler.java   # 异常处理
-│   └── GatewayApplication.java     # 启动类
+molandev-base/
+├── src/main/java/com/molandev/base/
+│   ├── sys/                      # 系统管理
+│   │   ├── controller/
+│   │   │   ├── SysUserController.java
+│   │   │   ├── SysRoleController.java
+│   │   │   └── SysMenuController.java
+│   │   ├── service/
+│   │   └── mapper/
+│   ├── file/                     # 文件管理
+│   │   ├── controller/
+│   │   └── service/
+│   ├── msg/                      # 消息管理
+│   │   ├── controller/
+│   │   └── service/
+│   ├── task/                     # 定时任务
+│   │   ├── controller/
+│   │   └── service/
+│   └── BaseApp.java              # 启动类（微服务模式）
+└── src/main/resources/
+    └── application.yml
+```
+
+**启动类：**
+
+```java
+@SpringBootApplication
+public class BaseApp {
+    public static void main(String[] args) {
+        SpringApplication.run(BaseApp.class, args);
+    }
+}
+```
+
+::: tip 服务整合
+`molandev-base` 整合了原 `sys-service`、`file-service`、`msg-service`、`task-service` 的所有功能，减少服务间通信开销，简化部署和运维。
+:::
+
+#### 2.2 AI 服务 (molandev-ai)
+
+**职责：** AI 相关业务，包括知识库管理、AI 对话等。
+
+**目录结构：**
+
+```
+molandev-ai/
+├── src/main/java/com/molandev/ai/
+│   ├── library/                   # 知识库管理
+│   │   ├── controller/
+│   │   └── service/
+│   └── AiApp.java                 # 启动类
+└── src/main/resources/
+    └── application.yml
+```
+
+#### 2.3 网关服务 (molandev-gateway)
+
+**职责：** 微服务模式的统一入口、路由转发、认证鉴权。
+
+**技术栈：**
+- Spring Cloud Gateway (WebFlux)
+- Redis Reactive
+- Knife4j Gateway
+
+**目录结构：**
+
+```
+molandev-gateway/
+├── src/main/java/com/molandev/gateway/
+│   ├── config/                    # 配置类
+│   │   └── GatewayConfig.java
+│   ├── filter/                    # 过滤器
+│   │   ├── GatewayAuthFilter.java
+│   │   └── PermissionCheckGatewayFilter.java
+│   └── GatewayApp.java            # 启动类
 └── src/main/resources/
     └── application.yml
 ```
@@ -130,7 +166,7 @@ gateway-service/
 ```java
 // 认证过滤器
 @Component
-public class AuthFilter implements GlobalFilter, Ordered {
+public class GatewayAuthFilter implements GlobalFilter, Ordered {
     
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, 
@@ -150,16 +186,8 @@ public class AuthFilter implements GlobalFilter, Ordered {
         
         // 验证 Token 并获取用户信息
         try {
-            Claims claims = JwtUtils.parseToken(token);
-            String userId = claims.getSubject();
-            
-            // 将用户信息放入请求头
-            ServerHttpRequest newRequest = request.mutate()
-                .header("X-User-Id", userId)
-                .build();
-            
-            return chain.filter(exchange.mutate()
-                .request(newRequest).build());
+            // ... Token 验证逻辑
+            return chain.filter(exchange);
         } catch (Exception e) {
             return unauthorized(exchange);
         }
@@ -172,194 +200,110 @@ public class AuthFilter implements GlobalFilter, Ordered {
 }
 ```
 
-#### 2.2 系统服务 (sys-service)
+#### 2.4 单体模式入口 (molandev-standalone-service)
 
-**职责：** 系统管理相关功能（用户、角色、菜单、部门等）。
+**职责：** 单体模式的启动入口，合并 base 和 ai 模块。
 
-**目录结构：**
+**实现方式：**
+- 通过 `@ComponentScan` 合并扫描多个模块
+- 排除微服务相关依赖（Nacos、Feign、RabbitMQ）
+- 共享数据库连接
 
-```
-sys-service/
-├── src/main/java/com/molandev/cloud/system/
-│   ├── controller/                  # 控制器
-│   │   ├── SysUserController.java
-│   │   ├── SysRoleController.java
-│   │   └── SysMenuController.java
-│   ├── service/                     # 服务层
-│   │   ├── ISysUserService.java
-│   │   └── impl/
-│   │       └── SysUserServiceImpl.java
-│   ├── mapper/                      # 数据访问层
-│   │   └── SysUserMapper.java
-│   ├── domain/                      # 实体类
-│   │   └── SysUser.java
-│   └── SystemApplication.java       # 启动类
-└── src/main/resources/
-    ├── mapper/                      # MyBatis XML
-    │   └── SysUserMapper.xml
-    └── application.yml
-```
-
-**分层架构：**
-
-```
-Controller (控制器) 
-    ↓
-Service (业务逻辑)
-    ↓
-Mapper (数据访问)
-    ↓
-Database (数据库)
-```
-
-**示例代码：**
+**启动类：**
 
 ```java
-// Controller
-@RestController
-@RequestMapping("/system/user")
-public class SysUserController {
-    
-    @Autowired
-    private ISysUserService userService;
-    
-    @GetMapping("/list")
-    public R<Page<SysUserVO>> list(SysUserQuery query) {
-        Page<SysUserVO> page = userService.list(query);
-        return R.ok(page);
-    }
-    
-    @PostMapping
-    public R<Void> save(@RequestBody @Validated SysUserDTO dto) {
-        userService.save(dto);
-        return R.ok();
-    }
-}
+@Slf4j
+@SpringBootApplication
+@ComponentScan({
+    "com.molandev.base",
+    "com.molandev.ai"
+})
+public class StandaloneApp {
 
-// Service
-@Service
-public class SysUserServiceImpl implements ISysUserService {
-    
-    @Autowired
-    private SysUserMapper userMapper;
-    
-    @Override
-    public Page<SysUserVO> list(SysUserQuery query) {
-        Page<SysUser> page = userMapper.selectPage(
-            new Page<>(query.getPageNum(), query.getPageSize()),
-            new LambdaQueryWrapper<SysUser>()
-                .like(StringUtils.hasText(query.getUsername()), 
-                    SysUser::getUsername, query.getUsername())
-        );
-        return page.convert(this::toVO);
+    public static void main(String[] args) {
+        SpringApplication.run(StandaloneApp.class, args);
     }
-    
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void save(SysUserDTO dto) {
-        SysUser user = toEntity(dto);
-        userMapper.insert(user);
-        // 保存用户角色关联
-        saveUserRoles(user.getId(), dto.getRoleIds());
-    }
-}
-
-// Mapper
-@Mapper
-public interface SysUserMapper extends BaseMapper<SysUser> {
-    
-    /**
-     * 根据用户名查询用户
-     */
-    SysUser selectByUsername(@Param("username") String username);
-    
-    /**
-     * 查询用户列表（包含角色信息）
-     */
-    List<SysUserVO> selectUserList(@Param("query") SysUserQuery query);
 }
 ```
 
-#### 2.3 文件服务 (file-service)
+**pom.xml 配置：**
 
-**职责：** 文件上传、下载、存储管理。
-
-**支持的存储方式：**
-- 本地存储
-- 阿里云 OSS
-- 七牛云
-- MinIO
-
-**目录结构：**
-
+```xml
+<dependencies>
+    <!-- 引入基础服务，排除微服务依赖 -->
+    <dependency>
+        <groupId>com.molandev</groupId>
+        <artifactId>molandev-base</artifactId>
+        <exclusions>
+            <exclusion>
+                <groupId>com.alibaba.cloud</groupId>
+                <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+            </exclusion>
+            <exclusion>
+                <groupId>com.alibaba.cloud</groupId>
+                <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+            </exclusion>
+            <exclusion>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-starter-openfeign</artifactId>
+            </exclusion>
+        </exclusions>
+    </dependency>
+    <!-- 引入 AI 服务 -->
+    <dependency>
+        <groupId>com.molandev</groupId>
+        <artifactId>molandev-ai</artifactId>
+    </dependency>
+</dependencies>
 ```
-file-service/
-├── src/main/java/com/molandev/cloud/file/
-│   ├── controller/
-│   │   └── FileController.java
-│   ├── service/
-│   │   ├── IFileService.java
-│   │   └── impl/
-│   │       ├── LocalFileServiceImpl.java
-│   │       ├── OssFileServiceImpl.java
-│   │       └── MinioFileServiceImpl.java
-│   ├── strategy/                    # 存储策略
-│   │   └── FileStorageStrategy.java
-│   └── FileApplication.java
-└── src/main/resources/
-    └── application.yml
+
+**配置示例：**
+
+```yaml
+# application-local.yml
+molandev:
+  run-mode: single          # 单体模式
+  lock:
+    type: memory            # 使用内存锁
+  datasource:
+    sys:                     # 系统数据源
+      url: jdbc:mysql://localhost:3306/molandev_base
+      username: root
+      password: 123456
+    ai:                      # AI 数据源
+      url: jdbc:mysql://localhost:3306/molandev_ai
+      username: root
+      password: 123456
+  security:
+    mode: LOCAL             # 本地认证模式
 ```
 
-#### 2.4 消息服务 (msg-service)
-
-**职责：** 站内消息、邮件、短信通知。
-
-**功能：**
-- 站内消息管理
-- 邮件发送
-- 短信发送
-- 消息模板管理
-
-#### 2.5 任务服务 (task-service)
-
-**职责：** 定时任务调度和执行。
-
-**技术方案：**
-- 基于 DelayQueue 实现
-- 支持 Cron 表达式
-- 支持 HTTP 回调
-
-### 3. 公共模块 (cloud-common)
+### 3. 公共模块 (molandev-common)
 
 **职责：** 公共工具类、基础配置、统一响应等。
 
 **目录结构：**
 
 ```
-cloud-common/
-├── src/main/java/com/molandev/cloud/common/
-│   ├── annotation/                  # 自定义注解
-│   │   ├── Log.java                # 日志注解
-│   │   └── DataScope.java          # 数据权限注解
-│   ├── config/                      # 配置类
-│   │   ├── MybatisPlusConfig.java  # MyBatis Plus 配置
-│   │   ├── RedisConfig.java        # Redis 配置
-│   │   └── WebMvcConfig.java       # Web 配置
-│   ├── constant/                    # 常量定义
-│   │   └── CommonConstant.java
-│   ├── core/                        # 核心类
-│   │   ├── R.java                  # 统一响应
-│   │   └── PageQuery.java          # 分页查询
-│   ├── enums/                       # 枚举类
-│   │   └── StatusEnum.java
-│   ├── exception/                   # 异常定义
+molandev-common/
+├── src/main/java/com/molandev/common/
+│   ├── annotation/                # 自定义注解
+│   │   ├── HasPermission.java    # 权限注解
+│   │   └── OpLog.java            # 操作日志注解
+│   ├── config/                    # 配置类
+│   │   ├── MybatisPlusConfig.java
+│   │   └── RedisConfig.java
+│   ├── constant/                  # 常量定义
+│   ├── core/                      # 核心类
+│   │   ├── JsonResult.java       # 统一响应
+│   │   └── PageQuery.java        # 分页查询
+│   ├── enums/                     # 枚举类
+│   ├── exception/                 # 异常定义
 │   │   ├── BusinessException.java
 │   │   └── GlobalExceptionHandler.java
-│   └── utils/                       # 工具类
-│       ├── ServletUtils.java
-│       └── SecurityUtils.java
+│   └── utils/                     # 工具类
 └── src/main/resources/
-    └── META-INF/spring.factories    # 自动配置
+    └── application-common.yml     # 公共配置
 ```
 
 **核心类：**
@@ -367,106 +311,97 @@ cloud-common/
 ```java
 // 统一响应
 @Data
-public class R<T> implements Serializable {
+public class JsonResult<T> implements Serializable {
     
-    private Integer code;
-    private String message;
-    private T data;
+    private String code;    // 状态码
+    private String msg;     // 消息
+    private T data;         // 数据
     
-    public static <T> R<T> ok() {
-        return ok(null);
+    public static <T> JsonResult<T> success() {
+        return success(null);
     }
     
-    public static <T> R<T> ok(T data) {
-        R<T> r = new R<>();
-        r.setCode(200);
-        r.setMessage("操作成功");
+    public static <T> JsonResult<T> success(T data) {
+        JsonResult<T> r = new JsonResult<>();
+        r.setCode("0000");
         r.setData(data);
         return r;
     }
     
-    public static <T> R<T> error(String message) {
-        R<T> r = new R<>();
-        r.setCode(500);
-        r.setMessage(message);
+    public static <T> JsonResult<T> failed(String message) {
+        JsonResult<T> r = new JsonResult<>();
+        r.setCode("1000");
+        r.setMsg(message);
         return r;
     }
 }
-
-// 全局异常处理
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-    
-    @ExceptionHandler(BusinessException.class)
-    public R<?> handleBusinessException(BusinessException e) {
-        return R.error(e.getMessage());
-    }
-    
-    @ExceptionHandler(Exception.class)
-    public R<?> handleException(Exception e) {
-        log.error("系统异常", e);
-        return R.error("系统异常，请联系管理员");
-    }
-}
 ```
 
-### 4. 单体合并模块 (merge-service)
+### 4. MolanDev Framework 依赖
 
-**职责：** 将所有服务合并为一个单体应用。
+项目依赖 `molandev-framework`（已发布到 Maven 中央仓库），提供核心能力：
 
-**实现方式：**
-- 依赖所有服务模块
-- 统一启动类
-- 共享数据库连接
+| 模块 | 功能 |
+|------|------|
+| `molandev-rpc` | 双模切换核心 - 接口即服务、智能路由 |
+| `molandev-event` | 统一事件总线 - 单体内存/微服务 RabbitMQ |
+| `molandev-datasource` | 智能多数据源 - 包名自动路由 |
+| `molandev-encrypt` | 全链路安全 - 混合加密、签名、脱敏 |
+| `molandev-lock` | 分布式锁 - Redis/内存双策略 |
+| `molandev-file` | 文件存储 - 本地/S3 切换 |
+| `molandev-util` | 底层工具库 |
+| `molandev-spring` | Spring 增强组件 |
 
-**目录结构：**
+**Maven 依赖：**
 
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>com.molandev</groupId>
+            <artifactId>molandev-dependencies</artifactId>
+            <version>1.0.1</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
 ```
-merge-service/
-├── src/main/java/com/molandev/cloud/merge/
-│   └── MergeApplication.java        # 单体启动类
-└── src/main/resources/
-    └── application.yml               # 单体配置
-```
-
-### 5. 代码生成器 (codegen-util)
-
-**职责：** 快速生成 CRUD 代码。
-
-**生成内容：**
-- Entity 实体类
-- Mapper 接口和 XML
-- Service 接口和实现
-- Controller 控制器
-- 前端页面（可选）
 
 ## 包命名规范
 
 ```
-com.molandev.cloud.{module}
+com.molandev.{module}
 ├── controller      # 控制器
-├── service         # 服务接口
-│   └── impl       # 服务实现
+├── service         # 服务类（直接继承 ServiceImpl）
 ├── mapper          # 数据访问
-├── domain          # 实体类
+├── entity          # 实体类
 ├── dto             # 数据传输对象
-│   ├── request    # 请求 DTO
-│   └── response   # 响应 DTO
-├── vo              # 视图对象
 ├── enums           # 枚举
 ├── constant        # 常量
 ├── config          # 配置类
 └── utils           # 工具类
 ```
 
+**命名示例：**
+
+| 类型 | 命名规则 | 示例 |
+|------|----------|------|
+| 实体类 | {Name}Entity | `SysUserEntity` |
+| 服务类 | {Name}Service | `SysUserService` |
+| Mapper | {Name}Mapper | `SysUserMapper` |
+| Controller | {Name}Controller | `SysUserController` |
+
 ## 依赖关系
 
 ```
-basic-apps (应用层)
+molandev-standalone-service / molandev-gateway (应用入口)
     ↓ 依赖
-basic-apis (API 层)
+molandev-base / molandev-ai (业务服务)
     ↓ 依赖
-molandev-cloud-common (公共层)
+molandev-apis (API 层)
+    ↓ 依赖
+molandev-common (公共层)
     ↓ 依赖
 molandev-framework (框架层)
 ```
@@ -475,27 +410,17 @@ molandev-framework (框架层)
 
 ### application.yml 结构
 
+**微服务模式（molandev-base）：**
+
 ```yaml
 server:
-  port: 8080
+  port: 8081
 
 spring:
   application:
-    name: system-service
+    name: molandev-base
   
-  # 数据源配置
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/molandev_cloud
-    username: root
-    password: 123456
-  
-  # Redis 配置
-  redis:
-    host: localhost
-    port: 6379
-  
-  # 微服务配置（仅微服务模式）
+  # Nacos 配置（微服务模式）
   cloud:
     nacos:
       discovery:
@@ -503,19 +428,75 @@ spring:
       config:
         server-addr: localhost:8848
 
-# MyBatis Plus 配置
-mybatis-plus:
-  mapper-locations: classpath*:mapper/**/*.xml
-  type-aliases-package: com.molandev.cloud.*.domain
-  configuration:
-    map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-
-# 日志配置
-logging:
-  level:
-    com.molandev.cloud: debug
+molandev:
+  run-mode: cloud           # 微服务模式
+  datasource:
+    sys:
+      url: jdbc:mysql://localhost:3306/molandev_base
+      username: root
+      password: 123456
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      primary: true
+      packages:
+        - com.molandev.base
+  security:
+    mode: CLOUD             # 云端认证模式
 ```
+
+**单体模式（molandev-standalone-service）：**
+
+```yaml
+server:
+  port: 8080
+
+molandev:
+  run-mode: single          # 单体模式
+  lock:
+    type: memory            # 内存锁
+  datasource:
+    sys:
+      url: jdbc:mysql://localhost:3306/molandev_base
+      username: root
+      password: 123456
+      packages:
+        - com.molandev.base
+    ai:
+      url: jdbc:mysql://localhost:3306/molandev_ai
+      username: root
+      password: 123456
+      packages:
+        - com.molandev.ai
+  security:
+    mode: LOCAL             # 本地认证模式
+```
+
+## 双模部署
+
+### 单体模式
+
+```yaml
+molandev:
+  run-mode: single
+```
+
+- **特点**：
+  - 本地方法调用
+  - 多数据源事务统一
+  - 简单部署
+  - 快速开发
+
+### 微服务模式
+
+```yaml
+molandev:
+  run-mode: cloud
+```
+
+- **特点**：
+  - HTTP 远程调用
+  - 服务独立部署
+  - 弹性扩展
+  - 故障隔离
 
 ## 最佳实践
 
@@ -547,7 +528,7 @@ logging:
 
 ## 总结
 
-MolanDev Cloud 的项目结构特点：
+MolanDev Backend 的项目结构特点：
 
 - ✅ **模块化设计**：清晰的模块划分
 - ✅ **分层架构**：Controller-Service-Mapper
@@ -556,4 +537,6 @@ MolanDev Cloud 的项目结构特点：
 - ✅ **易于扩展**：新增模块简单
 - ✅ **便于维护**：职责清晰、解耦合理
 
-这为项目的长期发展奠定了坚实的基础！
+::: tip 双模架构优势
+通过 `molandev.run-mode` 配置项，项目可以在单体模式和微服务模式之间自由切换，无需修改业务代码。单体模式适合快速开发和中小规模部署，微服务模式适合大规模和高可用场景。
+:::

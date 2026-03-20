@@ -16,7 +16,7 @@
 - ❌ **监控困难** - 任务是否执行、执行结果难以追踪
 - ❌ **扩展复杂** - 使用 XXL-JOB 等需要额外部署和学习成本
 
-MolanDev Cloud 提供了**轻量级定时任务管理**，适合中小规模的任务调度需求。
+MolanDev Backend 提供了**轻量级定时任务管理**，适合中小规模的任务调度需求。
 
 ## 适用场景与定位
 
@@ -682,7 +682,7 @@ public void importantTask() {
 
 ## 总结
 
-MolanDev Cloud 的定时任务管理提供了：
+MolanDev Backend 的定时任务管理提供了：
 
 - ✅ **轻量级** - 基于 DelayQueue，无需额外服务
 - ✅ **易使用** - `@TaskSchedule` 注解一行代码定义任务

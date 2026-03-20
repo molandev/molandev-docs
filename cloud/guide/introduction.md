@@ -1,6 +1,6 @@
 # 项目介绍
 
-**MolanDev Cloud** 是基于 **[MolanDev Framework](/framework/guide/introduction)** 构建的企业级管理系统，它不仅是一个可直接使用的管理系统，更是展示框架能力的完整示例。
+**MolanDev Backend** 是基于 **[MolanDev Framework](/framework/guide/introduction)** 构建的企业级管理系统，它不仅是一个可直接使用的管理系统，更是展示框架能力的完整示例。
 
 ## 🎯 项目定位
 
@@ -51,49 +51,21 @@
 ## 📦 项目结构
 
 ```
-molandev-cloud/
-├── framework/                        # 框架核心（MolanDev Framework）
-│   ├── molandev-util/               # 工具类模块
-│   ├── molandev-encrypt/            # 加密模块
-│   ├── molandev-lock/               # 分布式锁
-│   └── ...
+molandev-backend/
+├── molandev-apis/              # API 接口定义
+│   ├── base-api/               # 基础 API
+│   └── ai-api/                 # AI 服务 API
 │
-├── cloud-backend/                    # 后端应用
-│   ├── basic-apis/          # API 接口定义
-│   │   ├── base-api/                  # 基础 API
-│   │   ├── sys-api/                   # 系统服务 API
-│   │   ├── file-api/                  # 文件服务 API
-│   │   ├── msg-api/                   # 消息服务 API
-│   │   └── task-api/                  # 任务服务 API
-│   │
-│   ├── basic-apps/          # 微服务实现
-│   │   ├── gateway-service/           # 网关服务
-│   │   ├── sys-service/               # 系统服务
-│   │   ├── file-service/              # 文件服务
-│   │   ├── msg-service/               # 消息服务
-│   │   └── task-service/              # 任务服务
-│   │
-│   ├── merge-service/               # 单体合并应用
-│   ├── cloud-common/                # 公共模块
-│   └── codegen-util/                # 代码生成器
+├── molandev-base/              # 基础服务实现
+│   ├── sys/                    # 系统管理模块
+│   ├── file/                   # 文件服务模块
+│   ├── msg/                    # 消息服务模块
+│   └── job/                    # 任务调度模块
 │
-├── cloud-frontend/                   # 前端应用
-│   ├── src/
-│   │   ├── api/                     # API 接口
-│   │   ├── components/              # 通用组件
-│   │   ├── layout/                  # 布局组件
-│   │   ├── stores/                  # 状态管理
-│   │   ├── utils/                   # 工具函数
-│   │   └── views/                   # 页面组件
-│   └── ...
-│
-├── cloud-deploy/                     # 部署配置
-│   ├── configs/                      # 配置文件
-│   └── middleware/                   # 中间件配置
-│
-└── docs/                             # 文档网站
-    ├── framework/                    # 框架文档
-    └── cloud/                        # 应用文档
+├── molandev-ai/                # AI 服务实现
+├── molandev-gateway/           # 网关服务
+├── molandev-common/            # 公共模块
+└── molandev-standalone-service/ # 单体模式合并模块
 ```
 
 ## 🔥 核心特性演示
@@ -103,9 +75,8 @@ molandev-cloud/
 ```yaml
 # application.yml
 molandev:
-  cloud:
-    mode: merge  # 单体模式
-    # mode: cloud  # 微服务模式
+  run-mode: single  # 单体模式
+  # run-mode: cloud  # 微服务模式
 ```
 
 **一行配置，完成切换！**
@@ -114,7 +85,7 @@ molandev:
 
 ```java
 // API 定义
-@FeignClient(name = "user-service")
+@FeignClient(name = "${molandev.service.base:molandev-base}")
 public interface UserApi {
     @GetMapping("/user/list")
     Page<UserDTO> list(@RequestBody UserQuery query);
@@ -239,17 +210,17 @@ public void addUser(SysUser user) {
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/molandev/molandev-cloud
+git clone https://github.com/molandev/molandev-backend
 
 # 2. 初始化数据库
-mysql -u root -p < sql/molandev-cloud.sql
+mysql -u root -p < sql/molandev.sql
 
 # 3. 启动后端（单体模式）
-cd backend/molandev-cloud-merge
+cd molandev-backend/molandev-standalone-service
 mvn spring-boot:run
 
 # 4. 启动前端
-cd frontend
+cd molandev-frontend
 npm install
 npm run dev
 ```

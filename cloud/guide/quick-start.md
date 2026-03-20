@@ -1,6 +1,6 @@
 # 快速开始
 
-本文档将帮助你在 **10 分钟内**在本地运行 MolanDev Cloud 项目,开始你的开发之旅。
+本文档将帮助你在 **10 分钟内**在本地运行 MolanDev Backend 项目,开始你的开发之旅。
 
 ::: tip 💡 面向对象
 本文档重点在于 **本地开发** 而非生产部署。
@@ -65,17 +65,17 @@ docker compose version
 
 ```bash
 # 克隆项目(请替换为你的实际Git仓库地址)
-git clone https://github.com/your-repo/molandev-cloud.git
+git clone https://github.com/your-repo/molandev-backend.git
 
 # 进入项目目录
-cd molandev-cloud
+cd molandev-backend
 ```
 
 ### 1.2 用 IDEA 打开项目
 
 1. 启动 **IntelliJ IDEA**
 2. 点击 `File` → `Open`
-3. 选择刚才克隆的 `molandev-cloud` 文件夹
+3. 选择刚才克隆的 `molandev-backend` 文件夹
 4. 点击 `OK` 打开项目
 
 ::: tip 💡 等待索引建立
@@ -264,7 +264,7 @@ USE molandev_msg;
 在 IDEA 中打开以下文件:
 
 ```
-backend/molandev-cloud-merge/src/main/resources/application-local.yml
+molandev-backend/molandev-standalone-service/src/main/resources/application-local.yml
 ```
 
 ### 3.2 修改数据库配置
@@ -281,17 +281,8 @@ molandev:
       driver-class-name: com.mysql.cj.jdbc.Driver
       primary: true
       packages:
-        - com.molandev.cloud.apps.sys
-        - com.molandev.cloud.apps.fs
-        - com.molandev.cloud.apps.job
-    
-    msg:  # 消息数据库
-      url: jdbc:mysql://localhost:3306/molandev_msg?characterEncoding=UTF-8&useSSL=false&serverTimezone=GMT%2B8
-      username: root
-      password: 你的MySQL密码  # 请修改这里
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      packages:
-        - com.molandev.cloud.apps.msg
+        - com.molandev.base
+        - com.molandev.ai
 ```
 
 ::: warning 🔑 密码修改
@@ -343,29 +334,29 @@ molandev:
 在 IDEA 左侧项目树中找到:
 
 ```
-backend/molandev-cloud-merge/src/main/java/
-  com/molandev/cloud/merge/MergeAllApp.java
+molandev-backend/molandev-standalone-service/src/main/java/
+  com/molandev/standalone/StandaloneApp.java
 ```
 
 ### 4.2 运行项目
 
 **方式一: 点击运行按钮** (推荐)
 
-1. 打开 `MergeAllApp.java` 文件
+1. 打开 `StandaloneApp.java` 文件
 2. 找到 `main` 方法
 3. 点击行号旁边的**绿色三角形**▶️
-4. 选择 `Run 'MergeAllApp'`
+4. 选择 `Run 'StandaloneApp'`
 
 **方式二: 使用快捷键**
 
-1. 打开 `MergeAllApp.java` 文件
+1. 打开 `StandaloneApp.java` 文件
 2. 按 `Shift + F10` (Windows/Linux) 或 `Control + R` (macOS)
 
 **方式三: Maven 命令**
 
 ```bash
 # 在项目根目录执行
-cd backend/molandev-cloud-merge
+cd molandev-backend/molandev-standalone-service
 mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
@@ -380,7 +371,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=local
  | |  | | (_) | | (_| | | | | (_| |  __/\ V /  
  |_|  |_|\___/|_|\__,_|_| |_|\__,_|\___| \_/   
 
-Started MergeAllApp in 8.888 seconds
+Started StandaloneApp in 8.888 seconds
 ```
 
 后端服务已启动在: `http://localhost:9099`
@@ -627,7 +618,7 @@ npm install
 
 ## 下一步
 
-恭喜你成功运行 MolanDev Cloud! 🎉
+恭喜你成功运行 MolanDev Backend! 🎉
 
 现在你可以:
 
@@ -708,10 +699,8 @@ npm install
 ```
 deploy/configs/
 ├── common-rabbitmq.yml      # RabbitMQ 公共配置
-├── system-service.yml        # 系统服务配置
-├── file-service.yml          # 文件服务配置(如有)
-├── msg-service.yml           # 消息服务配置(如有)
-└── task-service.yml          # 任务服务配置(如有)
+├── molandev-base.yml        # 基础服务配置
+├── molandev-ai.yml          # AI 服务配置(如有)
 ```
 
 **导入步骤:**
@@ -813,11 +802,9 @@ docker-compose ps
 
 **推荐启动顺序:**
 
-1. **Gateway** (8080) - `molandev-cloud-gateway/src/main/java/.../GatewayApp.java`
-2. **System Service** (8081) - `molandev-cloud-system-service/src/main/java/.../SystemApp.java`
-3. **File Service** (8082) - `molandev-cloud-file-service/src/main/java/.../FileApp.java`
-4. **Msg Service** (8083) - `molandev-cloud-msg-service/src/main/java/.../MsgApp.java`
-5. **Task Service** (8084) - `molandev-cloud-task-service/src/main/java/.../TaskApp.java`
+1. **Gateway** (8080) - `molandev-gateway/src/main/java/.../GatewayApp.java`
+2. **Base Service** (8081) - `molandev-base/src/main/java/.../BaseApp.java`
+3. **AI Service** (8082) - `molandev-ai/src/main/java/.../AiApp.java`
 
 ::: tip 💡 IDEA 多服务运行
 1. 右键项目根目录
@@ -834,11 +821,9 @@ docker-compose ps
 1. 点击左侧菜单 `服务管理` → `服务列表`
 2. 切换命名空间为 `molandev_local`
 3. 应该能看到所有启动的服务:
-   - system-service
-   - file-service
-   - msg-service
-   - task-service
-   - gateway(如果注册)
+   - molandev-base
+   - molandev-ai
+   - gateway
 
 #### 4. 访问系统
 
@@ -903,9 +888,9 @@ Unable to connect to RabbitMQ
 | 项目 | 单体模式 | 微服务模式 |
 |------|----------|-------------|
 | **中间件** | MySQL + Redis | MySQL + Redis + RabbitMQ + Nacos |
-| **服务数** | 1个 | 5个+ |
+| **服务数** | 1个 | 2-3个 |
 | **启动时间** | ~10秒 | ~1分钟 |
-| **内存占用** | ~500MB | ~2GB |
+| **内存占用** | ~500MB | ~1.5GB |
 | **配置管理** | 本地文件 | Nacos 集中管理 |
 | **调试难度** | 简单 | 中等 |
 | **适用场景** | 本地开发 | 生产环境、性能测试 |

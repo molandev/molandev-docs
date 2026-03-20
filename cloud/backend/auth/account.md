@@ -1,6 +1,6 @@
 # 账户策略
 
-MolanDev Cloud 提供了完善的账户管理策略，包括密码策略、账户状态管理等。
+MolanDev Backend 提供了完善的账户管理策略，包括密码策略、账户状态管理等。
 
 ## 配置方式
 
@@ -394,7 +394,7 @@ const encryptedPassword = encrypt(password)
 
 ## 总结
 
-MolanDev Cloud 的账户策略提供了：
+MolanDev Backend 的账户策略提供了：
 
 - ✅ 灵活的密码策略
 - ✅ 完善的账户状态管理

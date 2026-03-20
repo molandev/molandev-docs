@@ -1,12 +1,12 @@
 # 后端技术栈
 
-MolanDev Cloud 后端基于 **MolanDev Framework**，采用成熟的企业级技术栈，支持单体/微服务双模部署。
+MolanDev Backend 后端基于 **MolanDev Framework**，采用成熟的企业级技术栈，支持单体/微服务双模部署。
 
 ## 核心技术
 
 ### Spring Boot
 
-- **版本**：3.2.x
+- **版本**：3.5.x
 - **特性**：
   - 自动配置
   - 内嵌容器
@@ -24,10 +24,10 @@ MolanDev Cloud 后端基于 **MolanDev Framework**，采用成熟的企业级技
 
 ### Spring Cloud（微服务模式）
 
-- **版本**：2023.0.x
+- **版本**：2025.0.x
 - **组件**：
   - **OpenFeign**：声明式 HTTP 客户端
-  - **Gateway**：API 网关
+  - **Gateway**：API 网关（WebFlux）
   - **LoadBalancer**：客户端负载均衡
 
 ### 中间件
@@ -61,44 +61,17 @@ MolanDev Cloud 后端基于 **MolanDev Framework**，采用成熟的企业级技
 ## 项目结构
 
 ```
-cloud-backend/
-├── basic-apis/           # API 接口定义
-│   ├── base-api/                  # 基础 API
-│   ├── sys-api/                   # 系统服务 API
-│   ├── file-api/                  # 文件服务 API
-│   ├── msg-api/                   # 消息服务 API
-│   └── task-api/                  # 任务服务 API
-│
-├── basic-apps/           # 微服务实现
-│   ├── gateway-service/           # 网关服务（8080）
-│   ├── sys-service/               # 系统服务（8081）
-│   ├── file-service/              # 文件服务（8082）
-│   ├── msg-service/               # 消息服务（8083）
-│   └── task-service/              # 任务服务（8084）
-│
-├── merge-service/                 # 单体合并应用
-│   ├── src/main/java/
-│   │   └── com/molandev/cloud/
-│   │       ├── merge/             # 启动类
-│   │       └── ...
-│   └── src/main/resources/
-│       ├── application.yml        # 主配置
-│       ├── application-merge.yml  # 单体模式配置
-│       └── application-cloud.yml  # 微服务模式配置
-│
-├── cloud-common/                  # 公共模块
-│   ├── base/                      # 基础类
-│   ├── config/                    # 配置类
-│   ├── constant/                  # 常量
-│   ├── exception/                 # 异常类
-│   ├── util/                      # 工具类
-│   └── vo/                        # 值对象
-│
-└── codegen-util/                  # 代码生成器
-    └── src/main/resources/codegen/
-        ├── controller.java.vm     # Controller 模板
-        ├── service.java.vm        # Service 模板
-        └── ...
+molandev-backend/
+├── molandev-apis/              # API 接口定义
+├── molandev-common/             # 公共模块
+├── molandev-base/               # 基础服务（用户/角色/菜单/部门/文件/消息/任务）
+├── molandev-ai/                 # AI 服务（知识库管理）
+├── molandev-gateway/            # 微服务网关
+├── molandev-standalone-service/ # 单体模式启动入口
+└── deploy/                      # 部署配置
+    ├── compose/                 # Docker Compose 配置
+    ├── configs/                 # 配置文件
+    └── sql/                     # 数据库脚本
 ```
 
 ## 核心依赖
@@ -109,21 +82,20 @@ cloud-backend/
     <dependency>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-web</artifactId>
-        <version>3.2.0</version>
+        <version>3.5.6</version>
     </dependency>
     
     <!-- MyBatis Plus -->
     <dependency>
         <groupId>com.baomidou</groupId>
-        <artifactId>mybatis-plus-boot-starter</artifactId>
-        <version>3.5.5</version>
+        <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        <version>3.5.12</version>
     </dependency>
     
     <!-- Spring Cloud（微服务模式） -->
     <dependency>
         <groupId>org.springframework.cloud</groupId>
         <artifactId>spring-cloud-starter-openfeign</artifactId>
-        <version>4.1.0</version>
     </dependency>
     
     <!-- MolanDev Framework -->
@@ -141,29 +113,34 @@ cloud-backend/
 ### 单体模式
 
 ```yaml
-# application-merge.yml
+# application-local.yml
 molandev:
-  cloud:
-    mode: merge  # 单体模式
-
-spring:
+  run-mode: single        # 单体模式
+  lock:
+    type: memory          # 使用内存锁
+  security:
+    mode: LOCAL           # 本地认证模式
   datasource:
-    url: jdbc:mysql://localhost:3306/molandev_cloud
+    sys:
+      url: jdbc:mysql://localhost:3306/molandev_base
+      username: root
+      password: 123456
 ```
 
 - **特点**：
   - 本地方法调用
-  - 单一数据库
+  - 多数据源事务统一
   - 简单部署
   - 快速开发
 
 ### 微服务模式
 
 ```yaml
-# application-cloud.yml
+# application.yml
 molandev:
-  cloud:
-    mode: cloud  # 微服务模式
+  run-mode: cloud         # 微服务模式
+  security:
+    mode: CLOUD           # 云端认证模式
 
 spring:
   cloud:
@@ -174,7 +151,7 @@ spring:
 
 - **特点**：
   - HTTP 远程调用
-  - 服务拆分
+  - 服务独立部署
   - 弹性扩展
   - 故障隔离
 
@@ -217,29 +194,25 @@ spring:
 ### 包结构
 
 ```
-com.molandev.cloud.{service}
-├── controller/          # 控制器（或实现 API 接口）
-├── service/            # 业务逻辑
-│   ├── impl/           # 服务实现
-│   └── dto/            # 数据传输对象
-├── mapper/             # MyBatis Mapper
-├── entity/             # 实体类
-└── vo/                 # 视图对象
+com.molandev.{module}
+├── controller/          # 控制器
+├── service/             # 服务类（直接继承 ServiceImpl）
+├── mapper/              # MyBatis Mapper
+├── entity/              # 实体类
+└── dto/                 # 数据传输对象
 ```
 
 ### 命名规范
 
-- **实体类**：`SysUser`
-- **DTO**：`UserDTO`
-- **VO**：`UserVO`
-- **Controller**：`UserController`
-- **Service**：`UserService`
-- **Mapper**：`UserMapper`
+- **实体类**：`SysUserEntity`
+- **服务类**：`SysUserService`
+- **Mapper**：`SysUserMapper`
+- **Controller**：`SysUserController`
 
 ### 接口规范
 
 - 使用 RESTful 风格
-- 统一返回 `R<T>` 结果
+- 统一返回 `JsonResult<T>` 结果
 - 统一异常处理
 - 统一参数校验
 

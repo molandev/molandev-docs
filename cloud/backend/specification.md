@@ -1,25 +1,23 @@
 # 开发规范
 
-本文档规定 MolanDev Cloud 项目的开发规范，确保代码质量和团队协作效率。
+本文档规定 MolanDev Backend 项目的开发规范，确保代码质量和团队协作效率。
 
 ## 包结构规范
 
 ### 标准包结构
 
 ```
-com.molandev.cloud.{module}
-├── controller/          # 控制器（或实现 API 接口）
-├── service/            # 业务逻辑接口
-│   ├── impl/           # 服务实现
-│   └── dto/            # 数据传输对象
-├── mapper/             # MyBatis Mapper 接口
-├── entity/             # 数据库实体类
-├── vo/                 # 视图对象（返回给前端）
-├── enums/              # 枚举类
-├── constant/           # 常量定义
-├── config/             # 配置类
-├── exception/          # 异常类
-└── utils/              # 工具类
+com.molandev.{module}
+├── controller/          # 控制器
+├── service/             # 服务类（直接继承 ServiceImpl）
+├── mapper/              # MyBatis Mapper 接口
+├── entity/              # 数据库实体类
+├── dto/                 # 数据传输对象
+├── enums/               # 枚举类
+├── constant/            # 常量定义
+├── config/              # 配置类
+├── exception/           # 异常类
+└── utils/               # 工具类
 ```
 
 ### 包命名说明
@@ -27,11 +25,10 @@ com.molandev.cloud.{module}
 | 包名 | 用途 | 示例 |
 |------|------|------|
 | controller | 控制器，处理 HTTP 请求 | `SysUserController` |
-| service | 业务逻辑实现类 | `SysUserService` |
+| service | 服务类，业务逻辑实现 | `SysUserService` |
 | mapper | 数据访问层 | `SysUserMapper` |
 | entity | 数据库实体类 | `SysUserEntity` |
 | dto | 数据传输对象 | `SysUserDTO` |
-| vo | 视图对象 | `SysUserVO` |
 | enums | 枚举类 | `UserStatusEnum` |
 | constant | 常量 | `UserConstant` |
 | config | 配置类 | `RedisConfig` |
@@ -64,15 +61,14 @@ public class SysUserRequest { }
 public class UserParam { }
 ```
 
-**3. VO（View Object）**
+**3. 实体类与 DTO 的区分**
 
 ```java
-// ✅ 正确：以 VO 结尾
-public class SysUserVO { }
-public class MenuTreeVO { }
+// 实体类：对应数据库表，以 Entity 结尾
+public class SysUserEntity { }
 
-// ❌ 错误
-public class SysUserView { }
+// DTO：用于接口传输，以 DTO 结尾
+public class SysUserDTO { }
 ```
 
 **4. Controller**
@@ -102,7 +98,7 @@ public class SysUserServiceImpl implements ISysUserService { }
 
 ```java
 // ✅ 正确：以 Mapper 结尾
-public interface SysUserMapper extends BaseMapper<SysUser> { }
+public interface SysUserMapper extends BaseMapper<SysUserEntity> { }
 
 // ❌ 错误
 public interface SysUserDao { }
@@ -118,13 +114,13 @@ public interface SysUserDao { }
 
 ```java
 // ✅ 正确：业务语义明确
-public Page<SysUserVO> list(SysUserQuery query) { }
+public Page<SysUserEntity> list(SysUserQuery query) { }
 public void saveUser(SysUserEntity entity, String roleIds) { }
 public void updateUser(SysUserEntity entity, String roleIds) { }
 public void deleteById(String id) { }
 
 // ❌ 错误：语义不清
-public List<SysUserVO> query() { }
+public List<SysUserEntity> query() { }
 public void add() { }
 public void remove() { }
 ```
@@ -133,15 +129,15 @@ public void remove() { }
 
 ```java
 // ✅ 正确：以 select、insert、update、delete 开头
-SysUser selectByUsername(String username);
-List<SysUser> selectByDeptId(Long deptId);
-int insertBatch(List<SysUser> users);
-int updateStatus(Long id, Integer status);
-int deleteByIds(List<Long> ids);
+SysUserEntity selectByUsername(String username);
+List<SysUserEntity> selectByDeptId(String deptId);
+int insertBatch(List<SysUserEntity> users);
+int updateStatus(String id, Integer status);
+int deleteByIds(List<String> ids);
 
 // ❌ 错误
-SysUser getByUsername();
-List<SysUser> findByDept();
+SysUserEntity getByUsername();
+List<SysUserEntity> findByDept();
 ```
 
 ### 变量命名
@@ -302,7 +298,7 @@ public JsonResult<String> add(@RequestBody SysUserEntity user) {
 ```java
 @Tag(name = "用户管理")
 @RestController
-@RequestMapping("/system/user")
+@RequestMapping("/sys/user")
 public class SysUserController {
     
     @Autowired
@@ -321,7 +317,7 @@ public class SysUserController {
     // 2. 新增
     @Operation(summary = "新增用户")
     @PostMapping("/add")
-    @HasPermission("user:add")
+    @HasPermission("sys:user:add")
     @OpLog(title = "新增用户", type = OpTypes.ADD, module = "用户管理")
     public JsonResult<String> add(@ParameterObject SysUserEntity user) {
         if (StringUtils.isNotEmpty(user.getId())) {
@@ -334,7 +330,7 @@ public class SysUserController {
     // 3. 编辑
     @Operation(summary = "编辑用户")
     @PostMapping("/edit")
-    @HasPermission("user:edit")
+    @HasPermission("sys:user:edit")
     @OpLog(title = "编辑用户", type = OpTypes.UPDATE, module = "用户管理")
     public JsonResult<Void> edit(@ParameterObject SysUserEntity user) {
         if (StringUtils.isEmpty(user.getId())) {
@@ -347,7 +343,7 @@ public class SysUserController {
     // 4. 删除
     @Operation(summary = "删除用户")
     @PostMapping("/delete")
-    @HasPermission("user:delete")
+    @HasPermission("sys:user:delete")
     @OpLog(title = "删除用户", type = OpTypes.DELETE, module = "用户管理")
     public JsonResult<Void> delete(@RequestParam String id) {
         if (StringUtils.isEmpty(id)) {
@@ -923,31 +919,53 @@ application-prod.yml         # 生产环境
 
 ### 配置示例
 
-```yaml
-# application.yml
-spring:
-  application:
-    name: system-service
-  profiles:
-    active: @profiles.active@  # 由 Maven 动态替换
+**单体模式（application-local.yml）：**
 
-# application-local.yml
+```yaml
+server:
+  port: 8080
+
+molandev:
+  run-mode: single          # 单体模式
+  lock:
+    type: memory            # 内存锁
+  datasource:
+    sys:
+      url: jdbc:mysql://localhost:3306/molandev_base
+      username: root
+      password: 123456
+      packages:
+        - com.molandev.base
+  security:
+    mode: LOCAL             # 本地认证模式
+
+logging:
+  level:
+    com.molandev: debug
+```
+
+**微服务模式（application.yml）：**
+
+```yaml
 server:
   port: 8081
 
 spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/molandev_sys
-    username: root
-    password: 123456
-  
-  redis:
-    host: 127.0.0.1
-    port: 6379
+  application:
+    name: molandev-base
+  profiles:
+    active: @profiles.active@  # 由 Maven 动态替换
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+      config:
+        server-addr: localhost:8848
 
-logging:
-  level:
-    com.molandev.cloud: debug
+molandev:
+  run-mode: cloud           # 微服务模式
+  security:
+    mode: CLOUD             # 云端认证模式
 ```
 
 ## 代码检查清单
