@@ -8,6 +8,7 @@
 - ✅ **优雅降级**：不支持虚拟线程时自动使用普通线程
 - ✅ **零依赖**：纯反射实现，无需额外依赖
 - ✅ **线程安全**：所有方法都是线程安全的
+- ✅ **类检测机制**：通过检测 JDK 内部类判断虚拟线程支持，避免版本号解析问题
 
 ## Maven 依赖
 
@@ -31,7 +32,7 @@ public static ThreadFactory createVirtualThreadFactory()
 
 **返回值：**
 - Java 21+：返回虚拟线程工厂
-- Java 8-17：返回默认线程工厂
+- Java < 21：返回默认线程工厂
 
 **实现原理：**
 ```java
@@ -52,6 +53,20 @@ public class ThreadUtil {
         } catch (Exception e) {
             // 不支持虚拟线程，返回默认线程工厂
             return Executors.defaultThreadFactory();
+        }
+    }
+    
+    /**
+     * 检查当前运行时是否支持虚拟线程 (Java 21+)
+     * 通过检测 Thread.Builder$OfVirtual 类是否存在来判断，避免依赖版本号解析
+     */
+    public static boolean isVirtualThreadsSupported() {
+        try {
+            // Java 21+ 中才有 Thread.Builder$OfVirtual 类
+            Class.forName("java.lang.Thread$Builder$OfVirtual");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
         }
     }
 }
@@ -221,21 +236,27 @@ ThreadFactory factory = ThreadUtil.createVirtualThreadFactory();
 // Java 8-17: 普通线程
 ```
 
-### 2. 无需版本判断
+### 2. 版本兼容性
 
-与旧的实现不同，现在无需手动判断 Java 版本：
+通过检测 `java.lang.Thread$Builder$OfVirtual` 类是否存在来判断虚拟线程支持，避免了以下问题：
 
 ```java
-// ❌ 旧方式（已废弃）
-if (JavaVersionUtils.isVirtualThreadsSupported()) {
+// ❌ 旧方式：依赖版本号解析，在 Docker 镜像中可能获取失败
+int version = getJavaVersion(); // 已废弃
+if (version > 21) {
     factory = createVirtualThreadFactory();
-} else {
-    factory = Executors.defaultThreadFactory();
 }
 
-// ✅ 新方式（推荐）
-ThreadFactory factory = ThreadUtil.createVirtualThreadFactory();
+// ✅ 新方式：直接检测类是否存在
+boolean supported = ThreadUtil.isVirtualThreadsSupported();
+// Java 21+: true
+// Java < 21: false
 ```
+
+这种方式的优点：
+- 不依赖环境变量（如 `JAVA_VERSION`）
+- 不解析复杂的版本字符串格式
+- 在所有 JDK 发行版中都能正确工作（OpenJDK、Temurin、Oracle JDK 等）
 
 ### 3. 线程命名
 
