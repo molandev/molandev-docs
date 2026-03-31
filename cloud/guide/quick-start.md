@@ -282,7 +282,7 @@ molandev:
       primary: true
       packages:
         - com.molandev.base
-        - com.molandev.ai
+        - com.molandev.knowledge
 ```
 
 ::: warning 🔑 密码修改

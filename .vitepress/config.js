@@ -20,6 +20,7 @@ export default {
       { text: '预览', link: 'https://preview.molandev.com' },
       { text: '框架文档', link: '/framework/guide/introduction' },
       { text: '应用文档', link: '/cloud/guide/introduction' },
+      { text: '知识检索', link: '/knowledge/introduction' },
       { text: '文档转换服务', link: '/converter/overview' },
     ],
 
@@ -195,6 +196,26 @@ export default {
         //   ]
         // },
 
+      ],
+
+      // ========== Knowledge 服务 ==========
+      '/knowledge/': [
+        {
+          text: '指南',
+          items: [
+            { text: '项目介绍', link: '/knowledge/introduction' }
+          ]
+        },
+        {
+          text: '核心功能',
+          collapsed: false,
+          items: [
+            { text: '文档摄入', link: '/knowledge/ingest' },
+            { text: '检索系统', link: '/knowledge/retrieval' },
+            { text: 'RAG 问答', link: '/knowledge/rag' },
+            { text: '配置说明', link: '/knowledge/config' }
+          ]
+        }
       ]
 
     },

@@ -216,7 +216,7 @@ public class GatewayAuthFilter implements GlobalFilter, Ordered {
 @SpringBootApplication
 @ComponentScan({
     "com.molandev.base",
-    "com.molandev.ai"
+    "com.molandev.knowledge"
 })
 public class StandaloneApp {
 
@@ -465,7 +465,7 @@ molandev:
       username: root
       password: 123456
       packages:
-        - com.molandev.ai
+        - com.molandev.knowledge
   security:
     mode: LOCAL             # 本地认证模式
 ```
