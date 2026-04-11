@@ -1,14 +1,15 @@
 # RPC 远程调用
 
-`molandev-rpc` 是对 Spring Cloud OpenFeign 的深度封装与增强。它旨在简化微服务开发中的远程调用代码，支持通过接口定义自动创建 MVC 映射，并提供强大的“单体/微服务”无缝切换能力。
+`molandev-rpc` 是对 Spring Cloud OpenFeign 的深度封装与增强。它旨在简化微服务开发中的远程调用代码，支持通过接口定义自动创建 MVC 映射，并提供智能的”单体/微服务”无缝切换能力。
 
 ---
 
 ## 核心特性
 
 - **接口即服务**：只需定义 Feign 接口并实现它，无需编写冗余的 Controller。框架会自动根据 API 定义创建 MVC 映射（HandlerMapping）。
-- **单体/微服务无缝切换**：同一套代码，在微服务模式下通过 Feign 远程调用，在单体模式下由于面向接口编程的特性，会自动注入本地实现类，实现零成本切换。
-- **文件上传支持**：支持通过 Feign 进行文件上传，提供 `MultipartFileBuilder` 工具类，安全高效地构造 `MultipartFile` 对象。
+- **智能本地调用优化**：当服务内部调用自身的 Feign 接口时，框架自动识别并重定向到本地实现，绕过网络 IO，提升性能。
+- **零配置切换**：引入依赖即生效，框架自动判断同服务内调用走本地实现，跨服务调用走 Feign 远程调用。
+- **文件上传支持**：支持通过 Feign 进行文件上传，提供 `MultipartFileBuilder` 工具类（位于 `molandev-spring` 模块），安全高效地构造 `MultipartFile` 对象。
 - **自动降级支持**：完美集成 Feign 的降级（Fallback）机制，确保服务在高可用场景下的稳定性。
 - **透明化调用**：调用方感知不到底层是本地 Bean 调用还是远程 HTTP 调用。
 
@@ -16,16 +17,16 @@
 
 ## 工作原理
 
-1. **自动映射**：在 `cloud` 模式下，框架会扫描归属于当前服务的 Feign 接口，并自动将其实现类注册为 Spring MVC 的 Handler。
-2. **极致性能**：在 `cloud` 模式下，如果 A 服务内部调用自身的 API 接口，框架通过 `ProxyFeignClientFactoryBean` 自动识别并重定向到本地实现，绕过网络 IO。
-3. **零成本切换**：在 `single` 模式下，可以完全排除 Feign 依赖。由于业务代码始终面向接口编程，Spring 会自动将接口的本地实现类注入到调用方，无需任何 RPC 拦截逻辑，回归最纯粹的 Spring 调用方式。
-4. **模式感知**：通过 `molandev.run-mode` 配置项配合条件注解（如 `@ConditionalOnCloudMode`），实现不同环境下组件的精细化加载。
+1. **自动映射**：框架会扫描归属于当前服务的 Feign 接口（通过 `spring.application.name` 与 `@FeignClient(name = “...”)` 匹配），并自动将其实现类注册为 Spring MVC 的 Handler。
+2. **智能本地调用**：如果服务内部调用自身的 API 接口，框架通过 `LocalFeignProxyFactory` 自动识别并重定向到本地实现，绕过网络 IO。
+3. **跨服务远程调用**：跨服务的 FeignClient 保持标准的 Feign HTTP 调用。
+4. **JSON 格式统一**：自动配置 Feign 的 Encoder/Decoder，确保与 Web MVC 使用相同的日期格式（需配合 `molandev-spring` 模块）。
 
 ---
 
 ## 适用场景
 
-- **渐进式微服务化**：初期作为单体应用开发，后期只需拆分模块并调整配置，即可转为微服务架构。
+- **渐进式微服务化**：初期作为单体应用开发，后期只需拆分模块，框架自动适配调用方式。
 - **开发效率提升**：省去了编写 Controller 这一步骤，使开发者专注于业务接口的设计与实现。
 - **多端兼容**：同一份 API 定义，既可以给前端做 HTTP 接口，也可以给其他微服务做远程调用。
 
@@ -45,29 +46,18 @@
 </dependency>
 ```
 
-> **注意**：
-> 1. 该模块在 `cloud` 模式下依赖于 `Spring Cloud OpenFeign`，请确保项目中已正确配置 Spring Cloud 环境。
-> 2. 如果您的项目仅以 `single` (单体) 模式运行，您可以安全地排除 Feign 依赖，框架将退化为纯粹的 Spring 本地注入模式。
+> **注意**：该模块依赖于 `Spring Cloud OpenFeign`，请确保项目中已正确配置 Spring Cloud 环境。
 
-### 2. 核心配置
-
-在 `application.yml` 中配置运行模式：
-
-```yaml
-molandev:
-  run-mode: cloud # 可选值：cloud (微服务) / single (单体)
-```
-
-### 3. 定义与实现接口
+### 2. 定义与实现接口
 
 定义一个标准的 FeignClient 接口并直接实现它：
 
 ```java
 // 1. 定义接口
-@FeignClient(name = "user-service", fallback = UserApiFallback.class)
+@FeignClient(name = “user-service”, fallback = UserApiFallback.class)
 public interface UserApi {
-    @GetMapping("/user/get")
-    String getUserName(@RequestParam("id") Long id);
+    @GetMapping(“/user/get”)
+    String getUserName(@RequestParam(“id”) Long id);
 }
 
 // 2. 实现接口（无需编写 Controller）
@@ -75,24 +65,28 @@ public interface UserApi {
 public class UserServiceImpl implements UserApi {
     @Override
     public String getUserName(Long id) {
-        return "User_" + id;
+        return “User_” + id;
     }
 }
 ```
 
-### 4. 开启 Feign 扫描
+### 3. 开启 Feign 扫描
 
 在启动类上开启 Feign 扫描：
 
 ```java
 @SpringBootApplication
-@EnableFeignClients(basePackages = "com.your.package")
+@EnableFeignClients(basePackages = “com.your.package”)
 public class YourApplication {
     public static void main(String[] args) {
         SpringApplication.run(YourApplication.class, args);
     }
 }
 ```
+
+**无需任何额外配置**，框架会自动：
+- 将同服务内的 FeignClient 转换为本地调用
+- 将跨服务的 FeignClient 保持远程调用
 
 ---
 
@@ -101,38 +95,40 @@ public class YourApplication {
 ### 自动 MVC 映射 (Auto HandlerMapping)
 
 在传统的 Spring Cloud 开发中，通常需要同时编写接口和 Controller。`molandev-rpc` 简化了这一过程：
-- 框架启动时会自动识别归属于当前服务的 Feign 接口（通过 `spring.application.name` 与 `@FeignClient(name = "...")` 匹配）。
+- 框架启动时会自动识别归属于当前服务的 Feign 接口（通过 `spring.application.name` 与 `@FeignClient(name = “...”)` 匹配）。
 - 自动将接口上的映射信息注册到 Spring MVC 的 `RequestMappingHandlerMapping`。
 - 将接口的本地实现类作为处理请求的 Handler。
 
 这意味着 **不再需要编写 Controller 层**。您可以直接通过 HTTP 请求访问接口定义的路径。
 
-### 混合模式切换 (Hybrid Mode)
+### 智能本地调用优化
 
-- **Cloud 模式 (`cloud`)**：
-    - **微服务场景**：跨服务调用走标准 Feign 的 HTTP 调用。
-    - **本地服务逻辑**：如果 A 服务内部调用自身的 API 接口，框架会自动识别并走本地 Bean 调用（绕过网络 IO），提升性能。
-- **Standalone 模式 (`single`)**：
-    - **零依赖运行**：在单体场景下，甚至可以完全排除 Feign 相关的依赖包。
-    - **天然解耦**：Spring 自动将接口的本地实现类注入到调用方，无拦截损耗，性能最优。
+框架通过 `LocalFeignResolver` 和 `LocalFeignProxyFactory` 实现智能调用路由：
+
+- **同服务内调用**：当 `@FeignClient(name = “xxx”)` 的 name 与 `spring.application.name` 相同时，框架自动将 Feign 接口代理转换为本地实现类调用，绕过 HTTP 网络 IO。
+- **跨服务调用**：当 FeignClient 的 name 与当前服务不同时，保持标准的 Feign HTTP 远程调用。
+
+这种设计使得：
+- 单体应用中，所有服务间调用自动变为本地方法调用
+- 微服务架构中，同服务内的自调用自动优化，跨服务调用保持远程
 
 ### 服务自动降级 (Automatic Fallback)
 
 框架完全支持 Feign 的 `fallback` 和 `fallbackFactory`。
 
-**降级类编写规范：**
-建议为 Fallback 类添加条件注解，以防止在单体模式下与业务实现类产生 Bean 冲突：
+**降级类编写示例：**
 
 ```java
 @Component
-@ConditionalOnCloudMode // 仅在 Cloud 模式下生效
 public class UserApiFallback implements UserApi {
     @Override
     public String getUserName(Long id) {
-        return "Fallback: User information is temporarily unavailable";
+        return “Fallback: User information is temporarily unavailable”;
     }
 }
 ```
+
+> **注意**：Fallback 类会被框架自动过滤，不会重复注册 MVC 映射。
 
 ### 异常处理建议
 
@@ -147,10 +143,10 @@ public class UserApiFallback implements UserApi {
 在使用 Feign 客户端调用文件上传接口时，接口定义通常使用 `MultipartFile` 参数：
 
 ```java
-@FeignClient(name = "file-service")
+@FeignClient(name = “file-service”)
 public interface FileServiceApi {
-    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    String uploadFile(@RequestPart("file") MultipartFile file, @RequestParam("info") String info);
+    @PostMapping(value = “/upload”, consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    String uploadFile(@RequestPart(“file”) MultipartFile file, @RequestParam(“info”) String info);
 }
 ```
 
@@ -158,7 +154,9 @@ public interface FileServiceApi {
 
 ### MultipartFileBuilder 工具类
 
-`molandev-rpc` 提供了 `MultipartFileBuilder` 工具类，用于在多种场景下安全、高效地构造 `MultipartFile` 对象。
+`molandev-spring` 模块提供了 `MultipartFileBuilder` 工具类，用于在多种场景下安全、高效地构造 `MultipartFile` 对象。
+
+> **注意**：`MultipartFileBuilder` 位于 `molandev-spring` 模块，使用前请确保已引入该依赖。
 
 #### 内存安全设计
 
@@ -182,7 +180,7 @@ public String forwardUpload(@RequestPart("file") MultipartFile file) {
 #### 2. 从字符串/字节数组构造（小文件）
 
 ```java
-import com.molandev.framework.rpc.util.MultipartFileBuilder;
+import com.molandev.framework.spring.util.MultipartFileBuilder;
 
 // 从字符串构造
 String content = "Hello, World!";
@@ -314,15 +312,3 @@ feign:
         connect-timeout: 60000
         read-timeout: 60000
 ```
-
----
-
-## 示例项目 (Samples)
-
-为了帮助您更好地理解使用细节，我们在代码库中提供了完整的示例项目：
-
-- **`examples/molandev-rpc/service1`**: 调用方示例。
-- **`examples/molandev-rpc/service2`**: 提供方示例（接口即服务）。
-- **`examples/molandev-rpc/merge-service`**: 演示单体模式下如何将多个服务模块合并运行。
-
-您可以通过查看这些示例代码来快速掌握模块的使用细节。

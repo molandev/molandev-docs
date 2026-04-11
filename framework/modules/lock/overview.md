@@ -148,10 +148,9 @@ molandev-lock
 - [快速开始](./getting-started.md) - 5分钟快速上手
 - [注解使用](./annotation.md) - @GlobalLock 和 @Idempotent 详解
 - [编程式使用](./programming.md) - LockUtils 工具类详解
-- [最佳实践](./best-practices.md) - 生产环境使用指南
+- [实现原理](./implementation.md) - 分布式锁实现原理
 
 ## 相关链接
 
 - [Redis 分布式锁](https://redis.io/topics/distlock)
 - [Redisson 官方文档](https://github.com/redisson/redisson)
-- [分布式锁实现原理](./implementation.md)

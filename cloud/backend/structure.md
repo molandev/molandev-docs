@@ -52,7 +52,7 @@ molandev-apis/
 ```java
 // Feign 接口定义
 @FeignClient(
-    name = "${molandev.service.base:molandev-base}", 
+    name = "${molandev.service-name.molandev-base:molandev-base}", 
     contextId = "sysUserApi", 
     path = "/feign/user"
 )

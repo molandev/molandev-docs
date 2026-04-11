@@ -37,7 +37,7 @@ MolanDev Backend 基于一些核心设计理念构建，理解这些概念有助
 
 ```java
 // 定义 Feign 接口
-@FeignClient(name = "${molandev.service.base:molandev-base}", path = "/feign/user")
+@FeignClient(name = "${molandev.service-name.molandev-base:molandev-base}", path = "/feign/user")
 public interface SysUserApi {
     
     @GetMapping("/{id}")

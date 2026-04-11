@@ -92,12 +92,11 @@ docker-compose up -d
 ```yaml
 # application.yml
 molandev:
-  cloud:
-    mode: merge  # 单体模式：本地调用
-    # mode: cloud  # 微服务模式：HTTP 调用
+  run-mode: single  # 单体模式：事件本地分发
+  # run-mode: cloud  # 微服务模式：事件通过 RabbitMQ 跨服务传递
 ```
 
-一行配置切换，业务代码零改动！
+**RPC 模块无需配置**：框架自动判断同服务内调用走本地实现，跨服务调用走远程 HTTP！
 
 ### 接口即服务
 
@@ -118,8 +117,8 @@ public class UserServiceImpl implements UserApi {
     }
 }
 
-// 3. 单体模式：自动本地注入
-// 4. 微服务模式：自动注册为 HTTP 接口
+// 3. 同服务内调用：自动走本地实现，无网络开销
+// 4. 跨服务调用：自动走 Feign HTTP 远程调用
 ```
 
 ### 前端主题切换

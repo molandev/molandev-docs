@@ -85,7 +85,7 @@ molandev:
 
 ```java
 // API 定义
-@FeignClient(name = "${molandev.service.base:molandev-base}")
+@FeignClient(name = "${molandev.service-name.molandev-base:molandev-base}")
 public interface UserApi {
     @GetMapping("/user/list")
     Page<UserDTO> list(@RequestBody UserQuery query);

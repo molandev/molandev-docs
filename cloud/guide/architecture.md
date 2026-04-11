@@ -214,7 +214,7 @@ molandev-backend/
 
 ```java
 // 1. API 定义 (molandev-apis/base-api)
-@FeignClient(name = "${molandev.service.base:molandev-base}", contextId = "user")
+@FeignClient(name = "${molandev.service-name.molandev-base:molandev-base}", contextId = "user")
 public interface UserApi {
     @GetMapping("/user/get")
     UserVO getUser(@RequestParam("id") Long id);

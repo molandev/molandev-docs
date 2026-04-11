@@ -486,5 +486,4 @@ public void process() {
 ## 下一步
 
 - [编程式 API](./programming.md) - LockUtils 工具类详解
-- [最佳实践](./best-practices.md) - 生产环境使用指南
 - [实现原理](./implementation.md) - 了解底层实现
