@@ -57,21 +57,21 @@ boolean forceUpdate = strategy.isForceUpdatePassword();
 
 ### 1. 密码有效期
 
-**配置项：** `password-expire-days`
+**配置项：** `passwordExpireDays`
 
 控制密码的有效天数，默认 90 天。
 
 **计算方式：**
 - 以 `password_update_time` 字段为基准
-- 首次登录时以 `create_time` 为基准
+- `password_update_time` 为空时以 `create_time` 为基准
 - 超过有效期后触发密码过期流程
 
 **过期处理：**
 
-根据登录策略配置 `login-strategy-when-expire` 决定：
-- 0 - 禁止登录
-- 1 - 强制修改密码（默认）
-- 2 - 提示修改密码
+根据登录策略配置 `loginStrategyWhenExpire` 决定：
+- 1 - 提示修改密码
+- 2 - 强制修改密码
+- 3 - 禁止登录（默认）
 
 **设置建议：**
 - 高安全系统：30-60 天
@@ -90,7 +90,7 @@ boolean forceUpdate = strategy.isForceUpdatePassword();
 
 **密码复杂度验证：**
 
-系统根据账户策略配置自动验证密码复杂度：
+系统根据账户策略配置自动验证密码复杂度（`SysUserService.checkPasswordStrong()`）：
 
 - **长度验证** - 根据 `minPasswordLength` 和 `maxPasswordLength` 验证
 - **小写字母** - `includeLowerCase=true` 时必须包含
@@ -98,30 +98,54 @@ boolean forceUpdate = strategy.isForceUpdatePassword();
 - **数字** - `includeNumber=true` 时必须包含
 - **特殊字符** - `includeSymbol=true` 时必须包含
 
-**验证逻辑：** `SysUserService.checkPasswordStrong()`
+**验证逻辑：**
+```java
+public void checkPasswordStrong(String password) {
+    UserStrategy strategy = SysPropUtils.getProps(UserStrategy.class);
+    if (strategy.getMinPasswordLength() > 0 && password.length() < strategy.getMinPasswordLength()) {
+        throw new IllegalArgumentException("密码长度应大于" + strategy.getMinPasswordLength());
+    }
+    if (strategy.getMaxPasswordLength() > 0 && password.length() > strategy.getMaxPasswordLength()) {
+        throw new IllegalArgumentException("密码长度应小于" + strategy.getMaxPasswordLength());
+    }
+    if (strategy.isIncludeNumber() && !password.matches(REG_NUMBER)) {
+        throw new IllegalArgumentException("密码应包含数字");
+    }
+    if (strategy.isIncludeUpperCase() && !password.matches(REG_UPPERCASE)) {
+        throw new IllegalArgumentException("密码应包含大写字符");
+    }
+    if (strategy.isIncludeLowerCase() && !password.matches(REG_LOWERCASE)) {
+        throw new IllegalArgumentException("密码应包含小写字符");
+    }
+    if (strategy.isIncludeSymbol() && !password.matches(REG_SYMBOL)) {
+        throw new IllegalArgumentException("密码应包含特殊字符");
+    }
+}
+```
 
 ### 3. 首次登录策略
 
-**配置项：** `force-update-password`
+**配置项：** `forceUpdatePassword`
 
 控制用户首次登录时是否强制修改密码。
 
-**开启强制修改（`true`，默认）：**
+**开启强制修改（`true`）：**
 ```java
-if (firstLogin && forceUpdate) {
-    tokenStore.storeTempToken(token, userDetail, 5);
+if (userDetail.getPasswordUpdateTime() == null && userStrategy.isForceUpdatePassword()) {
+    tokenStore.storeTempToken(loginResult.getAccessToken(), userDetail, strategy.getTempSessionExpireMinutes());
     loginResult.setForceUpdatePassword(true);
+    loginResult.setTempUser(true);
     loginResult.setTip("您的密码为初始密码，请修改密码后登录系统");
 }
 ```
 
-- 生成 5 分钟临时 Token
+- 生成临时 Token
 - 只能访问修改密码接口
 - 修改密码后重新登录
 
-**仅提示（`false`）：**
+**仅提示（`false`，默认）：**
 ```java
-if (firstLogin && !forceUpdate) {
+if (!userStrategy.isForceUpdatePassword()) {
     loginResult.setTip("您的密码为初始密码，请及时修改");
 }
 ```
@@ -146,10 +170,11 @@ if (firstLogin && !forceUpdate) {
 
 **登录检查：**
 ```java
-if (user.getLocked()) {
-    if (unlockTime != null && unlockTime.isBefore(now)) {
-        // 已过解锁时间，自动解锁
-        sysUserService.unlock(userId);
+if (userDetail.getLocked() != null && userDetail.getLocked()) {
+    LocalDateTime lockTime = userDetail.getUnlockTime();
+    LocalDateTime nowTime = LocalDateTime.now();
+    if (lockTime != null && lockTime.isBefore(nowTime)) {
+        sysUserService.unlock(userDetail.getId());
     } else {
         return JsonResult.failed("用户已被锁定");
     }
@@ -170,7 +195,7 @@ if (user.getLocked()) {
 
 **登录检查：**
 ```java
-if (user.getDisabled()) {
+if (userDetail.getDisabled() != null && userDetail.getDisabled()) {
     return JsonResult.failed("用户已被禁用");
 }
 ```
@@ -191,58 +216,69 @@ if (user.getDisabled()) {
 2. 锁定状态检查
 3. 禁用状态检查
 4. 密码过期检查
+5. 首次登录检查
 
-任一检查失败即拒绝登录。
+任一检查失败即拒绝登录或按策略处理。
 
 ## 密码管理
 
 ### 1. 修改密码
 
-**接口：** `/sys/personal/updatePassword`
+**接口：** `POST /sys/me/pass/update`
 
 **流程：**
 1. 验证旧密码
-2. 检查新密码格式
+2. 检查新密码复杂度
 3. 加密新密码
 4. 更新数据库
 5. 更新 `password_update_time`
-6. 清除所有 Token（强制重新登录）
 
 **核心代码：**
 ```java
-public void updatePassword(String userId, String oldPassword, String newPassword) {
-    // 1. 验证旧密码
-    SysUserEntity user = getById(userId);
-    if (!passwordEncoder.matches(oldPassword, user.getPassword())) {
-        throw new BusinessException("原密码错误");
+@PostMapping("pass/update")
+public JsonResult<Void> passUpdate(String oldPass, String newPass) {
+    SysUserEntity byId = sysUserService.getById(loginId);
+    if (molandevPasswordEncoder.notMatch(oldPass, byId.getPassword())) {
+        throw new IllegalArgumentException("旧密码不正确");
     }
-    
-    // 2. 更新密码
-    user.setPassword(passwordEncoder.encode(newPassword));
-    user.setPasswordUpdateTime(LocalDateTime.now());
-    updateById(user);
-    
-    // 3. 清除所有Token
-    tokenStore.removeAllTokensByUserId(userId);
+    sysUserService.checkPasswordStrong(newPass);
+    byId.setPassword(molandevPasswordEncoder.encode(newPass));
+    byId.setPasswordUpdateTime(LocalDateTime.now());
+    sysUserService.saveOrUpdate(byId);
+    return JsonResult.success();
 }
 ```
 
 ### 2. 重置密码
 
-**接口：** `/sys/user/resetPassword`
+**接口：** `POST /sys/user/resetPass`
 
-**权限：** 需要 `system:user:resetPassword` 权限
+**权限：** 需要 `sys:user:resetPass` 权限
 
 **流程：**
 1. 管理员重置用户密码
-2. 重置为默认密码
+2. 重置为默认密码（配置项 `molandev.security.default-pass`，默认 `molandev123..`）
 3. 清空 `password_update_time`（标记为首次登录）
-4. 用户下次登录时强制修改
+4. 用户下次登录时触发首次登录策略
 
-**默认密码：**
-- 可配置默认密码
-- 建议使用 `123456` 或 `admin123` 等简单密码
-- 首次登录强制修改
+**核心代码：**
+```java
+@HasPermission("sys:user:resetPass")
+public JsonResult<Void> resetPass(@RequestParam String id) {
+    String defaultPassword = authProperties.getDefaultPass();
+    sysEmpEntityLambdaUpdateWrapper.set(SysUserEntity::getPassword, molandevPasswordEncoder.encode(defaultPassword));
+    sysEmpEntityLambdaUpdateWrapper.set(SysUserEntity::getPasswordUpdateTime, null);
+    this.sysUserService.update(sysEmpEntityLambdaUpdateWrapper);
+    return JsonResult.success();
+}
+```
+
+**默认密码配置：**
+```yaml
+molandev:
+  security:
+    default-pass: molandev123..
+```
 
 ### 3. 忘记密码
 
@@ -256,75 +292,68 @@ public void updatePassword(String userId, String oldPassword, String newPassword
 
 ### 1. 锁定账户
 
-**接口：** `/sys/user/lock`
+**方法：** `SysUserService.lock(userId)`
 
 **流程：**
 ```java
 public void lock(String userId) {
-    SysUserEntity user = new SysUserEntity();
-    user.setId(userId);
-    user.setLocked(true);
-    user.setUnlockTime(LocalDateTime.now().plusHours(24)); // 24小时后自动解锁
-    updateById(user);
-    
-    // 踢出所有在线Token
-    tokenStore.kickoutAllTokensByUserId(userId);
+    SysUserEntity byId = this.getById(userId);
+    byId.setLocked(true);
+    UserLoginStrategy props = SysPropUtils.getProps(UserLoginStrategy.class);
+    int lockMinutes = props.getLockMinutes();
+    byId.setUnlockTime(LocalDateTime.now().plusMinutes(lockMinutes));
+    this.saveOrUpdate(byId);
 }
 ```
 
 **效果：**
 - 账户标记为锁定
-- 设置自动解锁时间
-- 踢出所有在线会话
+- 设置自动解锁时间（根据 `lockMinutes` 配置）
+- 锁定后无法登录
 
 ### 2. 解锁账户
 
-**接口：** `/sys/user/unlock`
+**方法：** `SysUserService.unlock(userId)`
 
 **流程：**
 ```java
 public void unlock(String userId) {
-    SysUserEntity user = new SysUserEntity();
-    user.setId(userId);
-    user.setLocked(false);
-    user.setUnlockTime(null);
-    updateById(user);
+    SysUserEntity byId = this.getById(userId);
+    byId.setLocked(false);
+    byId.setUnlockTime(null);
+    this.saveOrUpdate(byId);
 }
 ```
 
 ### 3. 禁用账户
 
-**接口：** `/sys/user/disable`
+**方法：** `SysUserService.disable(userId)`
 
 **流程：**
 ```java
 public void disable(String userId) {
-    SysUserEntity user = new SysUserEntity();
-    user.setId(userId);
-    user.setDisabled(true);
-    updateById(user);
-    
-    // 踢出所有在线Token
-    tokenStore.kickoutAllTokensByUserId(userId);
+    SysUserEntity byId = this.getById(userId);
+    byId.setDisabled(true);
+    byId.setUnlockTime(null);
+    this.saveOrUpdate(byId);
 }
 ```
 
 **效果：**
 - 账户标记为禁用
-- 踢出所有在线会话
 - 禁用后无法登录
 
 ### 4. 启用账户
 
-**接口：** `/sys/user/enable`
+**方法：** `SysUserService.enable(userId)`
 
 **流程：**
 ```java
 public void enable(String userId) {
-    SysUserEntity user = new SysUserEntity();
-    user.setId(userId);
-    user.setDisabled(false);
-    updateById(user);
+    SysUserEntity byId = this.getById(userId);
+    byId.setDisabled(false);
+    byId.setUnlockTime(null);
+    this.saveOrUpdate(byId);
 }
 ```
 
@@ -396,9 +425,9 @@ const encryptedPassword = encrypt(password)
 
 MolanDev Backend 的账户策略提供了：
 
-- ✅ 灵活的密码策略
-- ✅ 完善的账户状态管理
-- ✅ 安全的密码加密
-- ✅ 密码传输加密
-- ✅ 首次登录强制修改
-- ✅ 账户锁定/禁用机制
+- 灵活的密码策略
+- 完善的账户状态管理
+- 安全的密码加密
+- 密码传输加密
+- 首次登录强制修改
+- 账户锁定/禁用机制

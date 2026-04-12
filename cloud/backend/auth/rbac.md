@@ -53,7 +53,7 @@ sys:user:delete  // 删除用户
 **实现方式：**
 - 菜单中配置权限码
 - 前端通过 `v-auth` 指令控制按钮显示
-- 后端通过权限过滤器校验操作权限
+- 后端通过 `@HasPermission` 注解 + AOP 切面校验操作权限
 
 ## 数据表结构
 
@@ -108,62 +108,91 @@ public JsonResult<Void> delete(@RequestParam String id) {
 - `value` - 权限码数组，满足其一即可访问
 - 支持多个权限码：`@HasPermission({"sys:user:add", "sys:user:edit"})`
 
-**注解作用：**
-
-`@HasPermission` 注解是**权限元数据声明**，而非触发校验的标记：
-
-1. **声明作用** - 标注此接口需要什么权限
-2. **扫描收集** - 启动时被 `PermissionMetadataCollector` 扫描
-3. **提供映射** - 通过 `/_permission/mapping` 接口暴露给网关
-4. **网关校验** - 网关根据映射关系进行权限校验
-
 ### 权限校验机制
 
-**重要说明：系统不使用 AOP 方式进行权限校验。**
+系统使用 **AOP 切面** 进行权限校验，由 `PermissionAopAspect` 实现。
 
-**校验位置：**
-
-- **微服务模式** - 在网关的 `PermissionCheckGatewayFilter` 中统一校验
-- **单体模式** - 在 `LocalAuthFilter` 中统一校验
-- **后端服务** - 请求到达时已通过权限验证，无需再次校验
-
-**设计理由：**
-
-1. **统一入口，避免重复**
-   - 权限校验集中在网关/Filter 层
-   - 避免网关校验一次、后端 AOP 再校验一次的性能浪费
-
-2. **职责分离更清晰**
-   - 网关职责：认证 + 授权（权限校验）
-   - 后端职责：业务逻辑处理
-   - `@HasPermission` 仅作为元数据声明
-
-3. **性能优化**
-   - Filter/Gateway Filter 在请求链路的更前端
-   - 无权限的请求更早被拒绝，不进入业务层
-
-4. **双模兼容**
-   - 微服务和单体模式都能正常工作
-   - 统一的权限标注方式
-
-**工作流程：**
+**校验流程：**
 
 ```
-微服务模式：
-请求 → Gateway 
-     → GatewayAuthFilter(认证) 
-     → PermissionCheckGatewayFilter(授权，读取 @HasPermission 元数据)
-     → 后端服务 Controller(无需再校验)
-
-单体模式：
-请求 → LocalAuthFilter(认证+授权，读取 @HasPermission 元数据)
-     → Controller(无需再校验)
+请求到达 Controller
+  ↓
+PermissionAopAspect（AOP 拦截 @HasPermission 注解）
+  ↓ 检查是否 admin 角色（直接放行）
+  ↓ 获取用户权限码集合
+  ↓ 比对所需权限码与用户权限码
+  ↓ 任一匹配 → 放行
+  ↓ 全不匹配 → 抛出 NoPermissionException
+  ↓
+Controller 方法执行
 ```
 
-**扫描机制：**
-- 微服务启动时，`PermissionMetadataCollector` 扫描所有 `@HasPermission` 注解
-- 收集 RequestMapping 路径、HTTP 方法、权限码的映射关系
-- 通过 `/_permission/mapping` 接口暴露给网关
+**双模权限码获取：**
+
+| 模式 | 权限码来源 | 说明 |
+|------|-----------|------|
+| GATEWAY | `USER_PERMISSIONS` Header | 网关通过 `PermissionForwardGatewayFilter` 转发 |
+| LOCAL | Redis `AUTH_PERMISSION:{token}` | 直接从 Redis 读取 |
+
+**GATEWAY 模式（从 Header 获取）：**
+```java
+private Set<String> getPermissionsFromHeader() {
+    String header = MvcUtils.getHeader(AuthConst.HEADER_USER_PERMISSIONS);
+    return Arrays.stream(header.split(","))
+        .map(String::trim)
+        .filter(StringUtils::isNotEmpty)
+        .collect(Collectors.toSet());
+}
+```
+
+**LOCAL 模式（从 Redis 获取）：**
+```java
+private Set<String> getPermissionsFromRedis() {
+    ContextUser contextUser = AuthUtils.getUser();
+    String token = contextUser.getAccessToken();
+    String key = AuthConst.AUTH_PERMISSION_CACHE_PREFIX + token;
+    RSet<String> permissionSet = redissonClient.getSet(key, StringCodec.INSTANCE);
+    return permissionSet.readAll();
+}
+```
+
+**Admin 角色放行：**
+```java
+if (AuthUtils.isAdmin()) {
+    return pjp.proceed();
+}
+```
+拥有 `admin` 角色的用户自动跳过所有权限校验。
+
+**异常处理：**
+
+权限不足时抛出 `NoPermissionException`，由 `PermissionExceptionAdvice` 统一捕获并返回无权限响应：
+
+```java
+@ExceptionHandler({NoPermissionException.class})
+public Object serviceExceptionHandler(NoPermissionException ex) {
+    return JsonResult.noPermission();
+}
+```
+
+### 自动配置
+
+`AuthAutoConfiguration` 根据认证模式自动注册权限校验组件：
+
+**LOCAL 模式（`molandev.security.mode=LOCAL`）：**
+- 注册 `LocalAuthFilter`（认证）
+- 注册 `PermissionAopAspect`（权限校验）
+
+**GATEWAY 模式（`molandev.security.mode=GATEWAY`）：**
+- 注册 `PermissionAopAspect`（权限校验）
+- 不注册 `LocalAuthFilter`（认证由网关完成）
+
+**关闭权限校验：**
+```yaml
+molandev:
+  security:
+    check-permission: false
+```
 
 ### 为什么不使用 @HasRole
 
@@ -189,12 +218,12 @@ public JsonResult<Void> delete(@RequestParam String id) {
 
 **示例对比：**
 ```java
-// ❌ 不推荐：角色硬编码
+// 不推荐：角色硬编码
 @HasRole("admin")
 public void deleteUser() { }
 // 问题：如果增加"超级管理员"角色也需要此权限，需要修改代码
 
-// ✅ 推荐：功能权限
+// 推荐：功能权限
 @HasPermission("sys:user:delete")
 public void deleteUser() { }
 // 优势：任何角色只要分配了 sys:user:delete 权限即可访问
@@ -205,21 +234,20 @@ public void deleteUser() { }
 ### 获取用户菜单
 
 ```java
-// 根据用户ID查询所有菜单
-List<SysMenuEntity> menus = sysPermissionService.getMenusByUserId(userId);
+List<SysMenuTreeVo> menus = sysPermissionService.listPermissionMenuTree(userId);
 ```
 
 **查询逻辑：**
 1. 查询用户的所有角色
 2. 查询这些角色关联的所有菜单
-3. 过滤掉禁用的菜单
-4. 构建树形结构
+3. 补充丢失的父级菜单（菜单移动后可能父级无权限）
+4. 过滤掉禁用的菜单
+5. 构建树形结构
 
 ### 获取用户权限码
 
 ```java
-// 根据用户ID查询所有权限码
-Set<String> permissions = sysPermissionService.getPermissionsByUserId(userId);
+List<String> permissions = sysPermissionService.listPermissionCodes(userId);
 ```
 
 **查询逻辑：**
@@ -228,38 +256,17 @@ Set<String> permissions = sysPermissionService.getPermissionsByUserId(userId);
 3. 提取菜单中的权限码（`permission_code` 字段）
 4. 去重返回
 
-## 权限映射
+### 获取用户详情（登录时）
 
-### 映射机制
-
-微服务启动时自动扫描 `@HasPermission` 注解，构建路径与权限码的映射关系。
-
-**映射接口：** `GET /_permission/mapping`
-
-**返回格式：**
-```json
-[
-  {
-    "path": ["/sys/user/add"],
-    "method": ["POST"],
-    "permissionCode": ["sys:user:add"]
-  },
-  {
-    "path": ["/sys/user/delete"],
-    "method": ["POST"],
-    "permissionCode": ["sys:user:delete"]
-  }
-]
+```java
+SysUserDetail userDetail = sysPermissionService.getUserDetail(account);
 ```
 
-**实现类：**
-- `PermissionMetadataCollector` - 扫描注解
-- `PermissionMappingEndpoint` - 暴露接口
-
-**网关使用：**
-- `PermissionCheckGatewayFilter` 启动时调用此接口
-- 缓存权限映射关系
-- 用于请求路径与权限码的匹配
+**查询逻辑：**
+1. 根据账号/手机号/邮箱查询用户
+2. 查询用户的所有权限码
+3. 查询用户的所有角色编码
+4. 组装 `SysUserDetail` 返回
 
 ## 权限缓存
 
@@ -267,49 +274,10 @@ Set<String> permissions = sysPermissionService.getPermissionsByUserId(userId);
 
 用户登录成功后，将权限信息缓存到 Redis：
 
-- `auth:permission:{token}` - Set 结构，存储用户的所有权限码
+- `AUTH_PERMISSION:{token}` - Set 结构，存储用户的所有权限码
 - 过期时间与 Token 一致
 
 ### 权限刷新
-
-当角色权限变更或微服务重启时，网关会自动刷新权限映射。
-
-**自动刷新机制：**
-
-1. **微服务上线监听**
-   - `ServiceChangeListener4Permission` 监听 Nacos 服务上线事件
-   - 服务上线时自动调用 `clearPermissionMap()`
-   - 下次请求时重新加载权限映射
-
-2. **配置触发**
-   - 在 Nacos 路由配置中，将 `PermissionCheck` 过滤器的 `key` 属性设为 `Always`
-   - 启用自动监听服务上线
-   - 或者修改 `key` 的值来手动触发刷新
-
-**配置示例：**
-```yaml
-spring:
-  cloud:
-    gateway:
-      routes:
-        - id: system-service
-          uri: lb://system-service
-          filters:
-            - name: PermissionCheck
-              args:
-                key: Always  # 自动监听服务上线
-```
-
-**核心方法：**
-```java
-// PermissionCheckGatewayFilter.java
-public void clearPermissionMap() {
-    this.permissionMaps = null;
-    // 下次请求时会重新调用 /_permission/mapping
-}
-```
-
-**用户权限刷新：**
 
 用户的权限码缓存会在以下时机自动更新：
 
@@ -323,9 +291,7 @@ public void clearPermissionMap() {
    - 登录时写入最新的权限码到 Redis
 
 ::: tip 注意
-- 用户的权限码缓存（`auth:permission:{token}`）在用户刷新页面时会自动更新
-- 前端刷新时会调用权限接口，后端重新查询并更新 Redis 缓存
-- 权限映射（路径与权限码关系）会自动刷新
+用户刷新页面时，前端会重新请求权限接口，后端会重新查询数据库并更新 Redis 缓存，从而实现权限刷新，无需重新登录。
 :::
 
 ## 最佳实践
@@ -354,12 +320,20 @@ public void clearPermissionMap() {
 - 通过角色分配权限，而非直接给用户
 - 重要权限需要审批流程
 
+### 5. 路由权限前缀配置
+
+- 每个微服务路由只配置所需模块的前缀
+- 前缀与权限码的模块部分对应
+- 避免传递不必要的权限码
+
 ## 总结
 
 MolanDev Backend 的 RBAC 模型提供了：
 
-- ✅ 清晰的权限层级结构
-- ✅ 灵活的角色管理
-- ✅ 菜单和操作两级权限控制
-- ✅ 基于 Redis 的权限缓存
-- ✅ 权限动态刷新机制
+- 清晰的权限层级结构
+- 灵活的角色管理
+- 菜单和操作两级权限控制
+- 基于 AOP 的权限校验
+- GATEWAY/LOCAL 双模权限码获取
+- 基于 Redis 的权限缓存
+- 页面刷新自动更新权限

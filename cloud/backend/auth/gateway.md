@@ -1,104 +1,137 @@
-# 网关权限
+# 网关认证与权限转发
 
-MolanDev Backend 在网关层实现了完整的认证和权限校验机制，提供统一的安全保障。
+MolanDev Backend 在网关层实现了认证和权限转发机制，权限校验由后端服务通过 AOP 完成。
 
 ## 架构设计
 
 ### 过滤器链
 
-网关使用两个核心过滤器实现认证授权：
+网关使用两个核心过滤器：
 
-1. **GatewayAuthFilter** - 认证过滤器（Order=1）
+1. **GatewayAuthFilter** - 认证过滤器（GlobalFilter，Order=1）
    - 验证 Token 有效性
    - 解析用户信息
    - 白名单检查
+   - 获取用户权限码
    - Token 续期
 
-2. **PermissionCheckGatewayFilter** - 权限过滤器（Order=后）
-   - 路径与权限映射
-   - 用户权限校验
-   - 权限码匹配
+2. **PermissionForwardGatewayFilter** - 权限转发过滤器（Per-route GatewayFilter）
+   - 从 exchange attribute 获取用户权限码
+   - 按前缀过滤当前服务所需的权限码
+   - 通过 Header 转发给后端服务
 
 ### 处理流程
 
 ```
 请求进入
   ↓
-GatewayAuthFilter（认证）
-  ↓ Token验证
+GatewayAuthFilter（认证 + 加载权限）
+  ↓ Token 验证
   ↓ 白名单检查
   ↓ 用户信息解析
+  ↓ 获取用户权限码 → 存入 exchange attribute
   ↓ 自动续期
   ↓
-PermissionCheckGatewayFilter（授权）
-  ↓ 获取权限映射
-  ↓ 路径匹配
-  ↓ 权限校验
+PermissionForwardGatewayFilter（权限转发）
+  ↓ 读取 exchange attribute 中的权限码
+  ↓ 按前缀过滤
+  ↓ 写入 USER_PERMISSIONS Header
   ↓
 后端服务
+  ↓ PermissionAopAspect（AOP 权限校验）
 ```
 
 ## 认证过滤器
 
 ### 核心功能
 
-**GatewayAuthFilter** 负责验证用户身份。
+**GatewayAuthFilter** 负责验证用户身份并加载权限信息。
 
 **处理逻辑：**
 
-1. **Swagger 绕过**
+1. **WebService 绕过**
+   ```java
+   if (exchange.getRequest().getURI().getPath().contains("webservice")) {
+       return chain.filter(exchange);
+   }
+   ```
+
+2. **Swagger 开发模式**
    ```java
    if (swaggerEnabled && originHeaders.contains("Knife4j")) {
        return chain.filter(exchange);
    }
    ```
 
-2. **白名单检查**
-   ```java
-   if (checkWhite(path)) {
-       return chain.filter(exchange);
-   }
-   ```
-
-3. **Token 提取**
-   ```java
-   List<String> authHeaders = headers.get(AuthConst.HEADER_AUTHORIZATION);
-   String token = authHeaders.get(0);
-   ```
+3. **无 Token 请求**
+   - 白名单路径：放行
+   - 非白名单路径：返回未登录
 
 4. **Token 验证**
-   - 从 Redis 获取 Token 信息
+   - 从 Redis 获取 Token 信息（`AUTH_TOKEN:{token}`）
    - 检查 Token 是否存在
    - 检查是否被踢出（`kickout=1`）
-   - 检查是否为临时 Token（`temp=1`）
 
-5. **自动续期**
+5. **获取权限码**
    ```java
-   if (expireIn < effectiveSeconds / 2) {
-       reactiveRedisTemplate.expire(token, effectiveSeconds);
+   Set<String> permissions = reactiveRedisTemplate.opsForSet()
+       .members(AuthConst.AUTH_PERMISSION_CACHE_PREFIX + token)
+       .collect(Collectors.toSet());
+   // 存入 exchange attribute，供 PermissionForwardGatewayFilter 使用
+   newExchange.getAttributes().put(ATTR_USER_PERMISSIONS, permissions);
+   ```
+
+6. **自动续期**
+   ```java
+   if (expireInSeconds > 0 && expireInSeconds < effectiveSeconds / 2) {
+       reactiveRedisTemplate.expire(AUTH_TOKEN:{token}, effectiveSeconds);
+       reactiveRedisTemplate.expire(AUTH_PERMISSION:{token}, effectiveSeconds);
    }
    ```
 
-6. **用户信息传递**
+7. **用户信息传递**
    ```java
-   String encodeUser = URLEncoder.encode(userJson, UTF-8);
+   String encodeUser = URLEncoder.encode(userJson, StandardCharsets.UTF_8);
    newRequest.header(AuthConst.HEADER_USER_INFO, encodeUser);
    ```
 
 ### 白名单配置
 
-**配置文件：** `application.yml`
+**配置类：** `GatewayAuthProperties`
+
+**配置前缀：** `molandev.security`
+
+**内部白名单（`innerWhiteUris`）：**
+
+```java
+List<String> innerWhiteUris = ListUtils.toList(
+    "/sys/login",
+    "/sys/captcha",
+    "/sys/area/treeSimple",
+    "/sys/area/children",
+    "/sys/strategy/user/info",
+    "/auth/qrcode/verify",
+    "/file/upload",
+    "/file/preview/**",
+    "/file/download/**",
+    "/*/v3/api-docs",
+    "/v3/api-docs",
+    "/doc.html",
+    "/v3/api-docs/swagger-config",
+    "/webjars/**"
+);
+```
+
+**自定义白名单（`whiteUris`）：**
 
 ```yaml
-auth:
-  white-uris:
-    - /sys/login          # 登录接口
-    - /sys/captcha        # 验证码
-    - /sys/logout         # 登出接口
-    - /doc.html           # API文档
-    - /swagger-ui/**      # Swagger UI
-    - /v3/api-docs/**     # OpenAPI文档
+molandev:
+  security:
+    white-uris:
+      - /your/custom/path
 ```
+
+**合并规则：** 自定义白名单与内部白名单合并，使用 `AntPathMatcher` 匹配。
 
 **匹配规则：**
 - 使用 `AntPathMatcher` 进行路径匹配
@@ -112,148 +145,69 @@ auth:
 
 **配置：**
 ```yaml
-auth:
-  temp-uris:
-    - /sys/personal/updatePassword    # 修改密码
-    - /sys/personal/info              # 个人信息
+molandev:
+  security:
+    temp-uris:
+      - /sys/personal/updatePassword    # 修改密码
+      - /sys/personal/info              # 个人信息
 ```
 
 **检查逻辑：**
 ```java
-if (userSessionObj.getTemp() == 1) {
-    if (!checkTempUri(path)) {
-        return ResponseUtils.writeJson(JsonResult.notLogin());
+if (UserSessionObj.TEMP_FLAG.equals(userSessionObj.getTemp())) {
+    if (checkTempUri(path)) {
+        return chain.filter(newExchange);
+    } else {
+        return handleUnauthorized(exchange);
     }
 }
 ```
 
-## 权限过滤器
+## 权限转发过滤器
 
 ### 核心功能
 
-**PermissionCheckGatewayFilter** 负责校验用户权限。
+**PermissionForwardGatewayFilter** 负责将用户权限码按前缀过滤后转发给后端服务。
+
+**设计思路：**
+
+权限校验不再在网关层执行，而是由后端服务的 `PermissionAopAspect` 通过 AOP 完成。网关只负责将当前服务所需的权限码通过 Header 传递给后端，后端根据 `@HasPermission` 注解进行校验。
 
 **处理逻辑：**
 
-1. **获取权限映射**
+1. **获取权限码**
    ```java
-   permissionMaps = webClientBuilder.build()
-       .get()
-       .uri(serviceUri + "/_permission/mapping")
-       .retrieve()
-       .bodyToMono(String.class);
+   Set<String> userPermissions = exchange.getAttribute(GatewayAuthFilter.ATTR_USER_PERMISSIONS);
    ```
 
-2. **路径匹配**
-   - 提取请求路径：`/sys/user/add`
-   - 提取请求方法：`POST`
-   - 使用 AntPathMatcher 匹配路径模式
-   - 匹配 HTTP 方法
-
-3. **权限校验**
+2. **按前缀过滤**
    ```java
-   reactiveRedisTemplate.opsForSet()
-       .members(AuthConst.AUTH_PERMISSION_CACHE_PREFIX + token)
-       .filter(code -> permissionCode.contains(code))
-       .count();
+   String filtered = permissions.stream()
+       .filter(permission -> {
+           for (String prefix : permissionPrefixes) {
+               if (permission.startsWith(prefix)) {
+                   return true;
+               }
+           }
+           return false;
+       })
+       .collect(Collectors.joining(","));
    ```
 
-4. **结果判断**
-   - `count > 0` - 有权限，放行
-   - `count = 0` - 无权限，返回 403
+3. **写入 Header**
+   ```java
+   ServerHttpRequest newRequest = exchange.getRequest().mutate()
+       .header(AuthConst.HEADER_USER_PERMISSIONS, URLEncoder.encode(filtered, StandardCharsets.UTF_8))
+       .build();
+   ```
 
-### 权限映射
+### 路由配置
 
-后端微服务启动时自动扫描 `@HasPermission` 注解，构建权限映射关系。
+**过滤器工厂：** `PermissionForwardGatewayFilterFactory`
 
-**扫描机制：**
-1. `PermissionMetadataCollector` 扫描 RequestMappingHandlerMapping
-2. 提取所有标注了 `@HasPermission` 的方法
-3. 收集路径、HTTP 方法、权限码的对应关系
-4. 缓存到内存
+**配置格式：** `PermissionForward=前缀1,前缀2,...`
 
-**暴露接口：** `GET /_permission/mapping`
-
-**返回格式：**
-```json
-[
-  {
-    "path": ["/sys/user/add"],
-    "method": ["POST"],
-    "permissionCode": ["sys:user:add"]
-  },
-  {
-    "path": ["/sys/user/delete"],
-    "method": ["POST"],
-    "permissionCode": ["sys:user:delete"]
-  }
-]
-```
-```
-
-**实现类：**
-- `PermissionMetadataCollector` - 扫描 `@HasPermission` 注解
-- `PermissionMappingEndpoint` - 暴露 `/_permission/mapping` 接口
-
-**网关使用：**
-- `PermissionCheckGatewayFilter` 初始化时调用此接口
-- 缓存权限映射关系
-- 用于匹配请求路径与权限码
-
-### 路径匹配优先级
-
-当多个路径模式都匹配时，选择最具体的：
-
-**优先级规则：**
-1. `/` 分隔符越多，优先级越高
-2. 不含通配符的优先于含通配符的
-
-**示例：**
-```
-/sys/user/add           # 优先级最高
-/sys/user/*             # 优先级中
-/sys/**                 # 优先级最低
-```
-
-**实现：**
-```java
-matchedPaths.keySet().stream()
-    .min(Comparator.comparingLong(p -> p.chars().filter(ch -> ch == '/').count())
-        .reversed()
-        .thenComparing(p -> p.contains("*") ? 1 : 0))
-    .map(matchedPaths::get)
-    .orElse(null);
-```
-
-### 权限缓存
-
-**缓存结构：**
-- Key：`auth:permission:{token}`
-- Type：Set
-- Value：权限码列表
-- TTL：与 Token 一致
-
-**缓存时机：**
-- 用户登录成功后
-- Token 续期时同步续期
-
-### 权限刷新
-
-当微服务重启或权限配置变更时，网关会自动刷新权限映射。
-
-**自动刷新机制：**
-
-1. **微服务上线监听**
-   - `ServiceChangeListener4Permission` 监听 Nacos 服务上线事件
-   - 服务上线时自动调用 `clearPermissionMap()`
-   - 下次请求时重新调用 `/_permission/mapping`
-
-2. **配置触发刷新**
-   - 在 Nacos 路由配置中设置 `PermissionCheck` 过滤器
-   - `key: Always` - 启用自动监听服务上线
-   - 修改 `key` 的值 - 手动触发刷新
-
-**配置示例：**
+**Nacos 路由配置示例：**
 ```yaml
 spring:
   cloud:
@@ -262,99 +216,141 @@ spring:
         - id: system-service
           uri: lb://system-service
           filters:
-            - name: PermissionCheck
-              args:
-                key: Always  # 自动监听服务上线
+            - PermissionForward=sys,task,msg
+        - id: knowledge-service
+          uri: lb://knowledge-service
+          filters:
+            - PermissionForward=sys,knowledge
 ```
 
-**刷新逻辑：**
-```java
-public void clearPermissionMap() {
-    this.permissionMaps = null;
-    // 下次请求时重新加载
-}
-```
+**配置说明：**
+- `PermissionForward=sys,task,msg` 表示只传递以 `sys`、`task`、`msg` 开头的权限码
+- 不配置前缀时，传递所有权限码
+- 前缀与权限码格式 `模块:功能:操作` 中的模块部分对应
 
-**刷新场景：**
-- 微服务重启后新增/修改了 `@HasPermission` 注解
-- 服务扩容、缩容后
-- 手动触发刷新
+### 为什么不在网关校验权限
 
-**用户权限刷新：**
+旧版本在网关层通过 `PermissionCheckGatewayFilter` 执行权限校验，存在以下问题：
 
-用户的权限码缓存会在以下时机自动更新：
+1. **映射维护复杂**
+   - 网关需要从各服务拉取 `/_permission/mapping` 接口获取路径与权限码的映射
+   - 服务上下线时需要刷新映射缓存
+   - 路径匹配规则复杂，容易出错
 
-1. **页面刷新时**
-   - 前端调用 `POST /sys/me/funcs` 接口
-   - 后端重新查询数据库获取最新权限码
-   - 调用 `customTokenStore.restorePermission()` 更新 Redis 缓存
-   - 用户无需重新登录即可获得最新权限
+2. **职责不清晰**
+   - 网关需要理解业务权限语义
+   - 权限码与路径的映射关系分散在网关和后端两处
 
-2. **用户重新登录**
-   - 登录时写入最新的权限码到 Redis
+3. **扩展性差**
+   - 新增服务需要配置映射刷新监听
+   - 权限变更需要网关侧同步刷新
 
-::: tip 注意
-用户刷新页面时，前端会重新请求权限接口，后端会重新查询数据库并更新 Redis 缓存，从而实现权限刷新，无需重新登录。
-:::
+新架构将权限校验回归到后端服务：
+- 网关只做认证和权限转发
+- 后端通过 AOP 直接读取 `@HasPermission` 注解进行校验
+- 无需维护路径映射，无需 `/_permission/mapping` 接口
 
 ## 请求头传递
 
-网关将用户信息通过请求头传递给后端服务：
+网关将用户信息和权限码通过请求头传递给后端服务：
 
 **传递内容：**
 ```java
 ServerHttpRequest newRequest = request.mutate()
-    .header(AuthConst.HEADER_AUTHORIZATION, token)
-    .header(AuthConst.HEADER_USER_INFO, encodeUser)
+    .header(AuthConst.HEADER_AUTHORIZATION, token)           // Admin-Token
+    .header(AuthConst.HEADER_USER_INFO, encodeUser)          // URL 编码的用户信息 JSON
+    .header(AuthConst.HEADER_USER_PERMISSIONS, encodePerms)  // URL 编码的权限码（逗号分隔）
     .build();
 ```
 
 **请求头：**
-- `Authorization` - Token
-- `User-Info` - URL 编码的用户信息 JSON
+| Header | 说明 | 示例 |
+|--------|------|------|
+| `Admin-Token` | 用户 Token | `uuid-string` |
+| `USER_INFO` | URL 编码的用户信息 JSON | `%7B%22id%22%3A...%7D` |
+| `USER_PERMISSIONS` | URL 编码的权限码（逗号分隔） | `sys%3Auser%3Aadd%2Csys%3Auser%3Aedit` |
 
 **后端获取：**
 ```java
-ContextUser user = AuthUtils.getContextUser();
+// 获取当前用户
+ContextUser user = AuthUtils.contextUser();
+
+// 获取权限码（由 PermissionAopAspect 内部处理，业务代码无需关心）
+```
+
+## 安全过滤器
+
+### RemoveHeaderGlobalFilter
+
+`RemoveHeaderGlobalFilter` 是一个全局过滤器，用于移除外部请求中的 `INNER` Header，防止外部请求伪造内部调用。
+
+```java
+if (headers.containsKey(AuthConst.HEADER_INNER)) {
+    // 移除 INNER 头部字段，防止外部伪造
+    exchangeBuilder.request(exchange.getRequest().mutate()
+        .headers(httpHeaders -> httpHeaders.remove(AuthConst.HEADER_INNER))
+        .build());
+}
 ```
 
 ## 单体模式支持
 
-单体模式使用 `LocalAuthFilter` 实现相同功能。
+单体模式使用 `LocalAuthFilter` 实现认证功能，权限校验由 `PermissionAopAspect` 完成。
+
+### LocalAuthFilter
 
 **差异：**
-- 使用 Servlet Filter 而非 Gateway Filter
+- 使用 Servlet Filter（`OncePerRequestFilter`）而非 Gateway Filter
 - 同步代码而非响应式
 - 直接从 Redisson 获取数据
+- 不负责权限校验，仅做认证
 
 **核心逻辑：**
 ```java
 @Override
-protected void doFilterInternal(HttpServletRequest request, 
-                                HttpServletResponse response, 
+protected void doFilterInternal(HttpServletRequest request,
+                                HttpServletResponse response,
                                 FilterChain filterChain) {
-    String token = extractToken(request);
-    UserSessionObj sessionObj = getUserFromRedis(token);
-    
-    if (checkWhite(path) || sessionObj != null) {
-        AuthUtils.setContextUser(sessionObj.getContextUser());
-        filterChain.doFilter(request, response);
-    } else {
-        ResponseUtils.responseJson(response, JsonResult.notLogin());
-    }
+    // 1. Swagger 绕过
+    // 2. 提取 Token
+    // 3. 从 Redis 获取用户会话
+    // 4. 白名单检查
+    // 5. 踢出检查
+    // 6. 临时 Token 检查
+    // 7. 正常用户：设置上下文 + 自动续期
+    // 8. 权限校验由 PermissionAopAspect 负责
 }
 ```
+
+### 双模配置
+
+通过 `AuthAutoConfiguration` 根据配置自动注册对应的 Bean：
+
+**配置项：**
+```yaml
+molandev:
+  security:
+    mode: LOCAL          # LOCAL 或 GATEWAY
+    check-permission: true  # 是否启用权限校验，默认 true
+```
+
+**LOCAL 模式：**
+- 注册 `LocalAuthFilter`（认证）
+- 注册 `PermissionAopAspect`（权限校验，从 Redis 读取权限码）
+
+**GATEWAY 模式：**
+- 不注册 `LocalAuthFilter`（认证由网关完成）
+- 注册 `PermissionAopAspect`（权限校验，从 Header 读取权限码）
 
 ## 特殊处理
 
 ### 1. WebSocket 支持
 
-WebSocket 连接的特殊处理：
+WebSocket 连接在单体模式下返回 401 状态码：
 
 ```java
 if (isWebSocket) {
-    exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-    return exchange.getResponse().setComplete();
+    response.setStatus(401);
 }
 ```
 
@@ -366,7 +362,7 @@ if (isWebSocket) {
 SOAP WebService 请求绕过认证：
 
 ```java
-if (request.getURI().getPath().contains("webservice")) {
+if (exchange.getRequest().getURI().getPath().contains("webservice")) {
     return chain.filter(exchange);
 }
 ```
@@ -385,10 +381,31 @@ if (swaggerEnabled && originHeaders.contains("Knife4j")) {
 ```yaml
 knife4j:
   gateway:
-    enabled: true  # 开发环境设置为true
+    enabled: true  # 开发环境设置为 true
 ```
 
 **生产环境必须关闭！**
+
+## Redis 缓存结构
+
+### Token 缓存
+
+- **Key：** `AUTH_TOKEN:{token}`
+- **Type：** String（JSON 序列化的 `UserSessionObj`）
+- **TTL：** 会话过期时间（默认 30 分钟）
+
+### 权限码缓存
+
+- **Key：** `AUTH_PERMISSION:{token}`
+- **Type：** Set
+- **Value：** 权限码列表
+- **TTL：** 与 Token 一致
+
+### 用户 Token 集合
+
+- **Key：** `USERID_TO_ACCESS:{userId}`
+- **Type：** Set
+- **Value：** 该用户的所有有效 Token
 
 ## 安全建议
 
@@ -406,12 +423,11 @@ knife4j:
 - 设置合理的过期时间
 - 定期清理过期 Token
 
-### 3. 权限校验
+### 3. 权限转发
 
-- 前端权限控制仅用于 UI
-- 后端必须进行实际校验
-- 关键操作增加二次验证
-- 权限变更及时刷新
+- 每个路由只配置所需的前缀，避免传递过多权限码
+- 前缀与权限码模块对应，确保覆盖完整
+- 不配置前缀时传递全部权限码，适用于需要完整权限的服务
 
 ### 4. 监控审计
 
@@ -422,12 +438,11 @@ knife4j:
 
 ## 总结
 
-MolanDev Backend 的网关权限提供了：
+MolanDev Backend 的网关认证与权限转发提供了：
 
-- ✅ 统一的认证入口
-- ✅ 两层权限校验
-- ✅ 灵活的白名单机制
-- ✅ 自动 Token 续期
-- ✅ 路径权限映射
-- ✅ 权限动态刷新
-- ✅ 单体/微服务双模支持
+- 统一的认证入口
+- 权限码按需转发，网关不执行权限校验
+- 灵活的白名单机制
+- 自动 Token 续期
+- Per-route 权限前缀过滤
+- 单体/微服务双模支持

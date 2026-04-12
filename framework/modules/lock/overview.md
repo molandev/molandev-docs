@@ -1,156 +1,229 @@
 # 分布式锁模块概览
 
-molandev-lock 是一个强大、易用的分布式锁解决方案，提供注解式和编程式两种使用方式，支持 Redis、Redisson 和内存三种实现。
+molandev-lock 是一个强大、易用的分布式锁解决方案，提供注解式和编程式两种使用方式，支持 Redis、Redisson 和 Memory 三种实现。
 
 ## 核心特性
 
-### ✅ 多种实现方式
+- ✅ **多种实现**：Memory（默认）、Redis、Redisson，按需选择
+- ✅ **双模式支持**：编程式（`LockUtils`）灵活可控，注解式（`@GlobalLock`）简单优雅
+- ✅ **可重入锁**：支持同一线程多次获取同一把锁
+- ✅ **超时控制**：支持获取锁超时和自动释放
+- ✅ **幂等保护**：`@Idempotent` 注解防止重复提交
+- ✅ **降级策略**：获取锁失败时支持自定义降级逻辑
 
-- **Redis 实现**：基于 RedisTemplate，适合已有 Redis 的项目
-- **Redisson 实现**：基于 Redisson 客户端，功能更强大
-- **内存实现**：基于 Java 并发包，适合单机或测试环境
+## 锁实现对比
 
-### ✅ 双模式支持
+| 特性 | Memory | Redis | Redisson |
+|------|--------|-------|----------|
+| 分布式支持 | ❌ 仅单机 | ✅ | ✅ |
+| 可重入 | ✅ | ✅（本地计数） | ✅（原生） |
+| 性能 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| 依赖 | 无 | RedisTemplate | Redisson |
+| 适用场景 | 开发/测试环境 | 已有 Redis 的生产环境 | 需要高级功能 |
 
-- **编程式**：使用 `LockUtils` 静态工具类，灵活性高
-- **注解式**：使用 `@GlobalLock` 和 `@Idempotent` 注解，简单易用
+```yaml
+# 切换锁实现
+molandev:
+  lock:
+    type: memory  # memory | redis | redisson
+```
 
-### ✅ 完善的功能
+## 快速开始
 
-- **可重入锁**：支持同一线程多次获取同一把锁
-- **超时控制**：支持获取锁超时和自动释放
-- **幂等保护**：防止重复提交，保证接口幂等性
-- **降级策略**：获取锁失败时支持自定义降级逻辑
+### 1. 引入依赖
 
-### ✅ 生产级特性
+```xml
+<dependency>
+    <groupId>com.molandev</groupId>
+    <artifactId>molandev-lock</artifactId>
+    <version>${molandev.version}</version>
+</dependency>
+```
 
-- **防死锁**：自动释放机制防止死锁
-- **线程安全**：基于 ThreadLocal 管理锁栈
-- **高性能**：优化的锁实现，支持高并发场景
-- **可观测**：详细的日志记录，便于问题排查
-
-## 应用场景
-
-### 🎯 订单处理
-
-防止同一订单被重复处理：
+### 2. 编程式使用（推荐 ⭐⭐⭐⭐⭐）
 
 ```java
+import com.molandev.framework.lock.utils.LockUtils;
+
+// 默认超时：waitTime=30s, leaseTime=60s
 LockUtils.runInLock("ORDER_" + orderId, () -> {
-    // 处理订单逻辑
+    // 同一 orderId 同时只能有一个线程执行
     return processOrder(orderId);
+});
+
+// 自定义超时
+LockUtils.runInLock("PAYMENT_" + paymentId, 30, 120, () -> {
+    // waitTime=30秒，leaseTime=120秒
+    return processPayment(paymentId);
+});
+
+// 无返回值
+LockUtils.runInLock("CACHE_" + key, () -> {
+    cacheService.refresh(key);
 });
 ```
 
-### 🎯 库存扣减
-
-保证库存操作的原子性：
+### 3. 注解式使用
 
 ```java
-@GlobalLock(key = "'INVENTORY_' + #productId")
+import com.molandev.framework.lock.annotation.GlobalLock;
+
+@GlobalLock(key = "'INVENTORY_' + #productId", waitTime = 10, leaseTime = 30)
 public boolean deductInventory(Long productId, Integer quantity) {
     // 扣减库存逻辑
 }
 ```
 
-### 🎯 幂等控制
-
-防止用户重复提交：
+### 4. 幂等控制
 
 ```java
-@Idempotent(key = "#request.orderId", expireTime = 60)
-public OrderResult createOrder(OrderRequest request) {
-    // 创建订单逻辑
+import com.molandev.framework.lock.annotation.Idempotent;
+
+@PostMapping("/create")
+@Idempotent(key = "#request.orderId", expireTime = 60, msg = "请勿重复提交")
+public Result<Order> createOrder(@RequestBody OrderRequest request) {
+    // 60秒内相同 orderId 只会执行一次
 }
 ```
 
-### 🎯 缓存更新
+## 项目中的实际应用
 
-防止缓存击穿：
+### 场景一：任务调度防重复
+
+**代码位置：** `molandev-base/.../task/core/TaskScheduler.java`
+
+分布式环境下，防止多个节点同时调度同一个任务：
 
 ```java
-LockUtils.runInLock("CACHE_UPDATE_" + key, () -> {
-    // 更新缓存逻辑
-    updateCache(key, value);
+LockUtils.runInLock(
+    taskTrigger.getId() + taskTrigger.getNextTime(),
+    0,           // waitTime: 0秒，抢不到锁直接放弃（不阻塞）
+    5 * 60,      // leaseTime: 5分钟，防止节点时间差
+    () -> {
+        // 执行任务调度逻辑
+        taskExecutor.execute(taskExecutionDto);
+    }
+);
+```
+
+**设计要点：**
+- `waitTime=0` 抢占式策略，抢不到就放弃，避免阻塞
+- `leaseTime=5分钟` 足够长，防止不同节点时间差导致并发
+
+> 📖 **详细说明** → [任务管理文档](/cloud/backend/task)
+
+### 场景二：文档摄入防重复
+
+**代码位置：** `molandev-knowledge/.../ingest/task/KlDocumentIngestTaskService.java`
+
+防止同一个文档被多个节点同时处理：
+
+```java
+String lockKey = "INGEST_TASK_" + task.getId();
+int lockWaitSeconds = ragProperties.getIngest().getLockWaitSeconds();
+
+LockUtils.runInLock(lockKey, 0, lockWaitSeconds, () -> {
+    // 再次检查状态并更新为 processing
+    if (!this.updateToProcessing(task.getId())) {
+        log.info("任务已被其他节点处理: taskId={}", task.getId());
+        return;
+    }
+    // 执行文档转换、分片、向量化...
 });
 ```
 
-## 技术架构
+**设计要点：**
+- 锁内再次检查状态（双重检查），确保幂等
+- 使用业务 ID 作为锁 key，粒度精细
 
-### 核心组件
+> 📖 **详细说明** → [知识库文档](/cloud/knowledge)
 
+## 参数说明
+
+### runInLock 参数
+
+| 参数 | 说明 | 推荐值 |
+|------|------|--------|
+| `key` | 锁的标识，支持 SpEL 表达式 | 业务 ID 前缀 + 具体 ID |
+| `waitTime` | 获取锁的最大等待时间（秒） | 0（抢占式）或 10-30 |
+| `leaseTime` | 锁自动释放时间（秒） | 业务执行时间的 2-3 倍 |
+
+### @GlobalLock 属性
+
+| 属性 | 说明 | 默认值 |
+|------|------|--------|
+| `key` | SpEL 表达式 | 必填 |
+| `waitTime` | 获取锁超时时间（秒） | 30 |
+| `leaseTime` | 租约时间（秒） | 60 |
+| `timeoutFallback` | 超时降级方法名 | 空 |
+
+### @Idempotent 属性
+
+| 属性 | 说明 | 默认值 |
+|------|------|--------|
+| `key` | SpEL 表达式，幂等键 | 必填 |
+| `expireTime` | 有效期（秒） | 60 |
+| `msg` | 重复请求时的提示信息 | "请勿重复请求" |
+
+## 最佳实践
+
+### ✅ 推荐做法
+
+```java
+// 1. 使用业务 ID 作为锁 key
+LockUtils.runInLock("ORDER_" + orderId, () -> {...});
+
+// 2. 合理设置超时时间
+LockUtils.runInLock(key, 30, 60, () -> {...});
+
+// 3. 编程式便于异常处理
+try {
+    return LockUtils.runInLock(key, () -> {...});
+} catch (LockTimeoutException e) {
+    // 降级处理
+    return defaultValue;
+}
 ```
-molandev-lock
-├── annotation          # 注解定义
-│   ├── @GlobalLock    # 全局锁注解
-│   └── @Idempotent    # 幂等注解
-├── aspect             # 切面实现
-│   ├── LockAspect     # 锁切面
-│   └── IdempotentAspect  # 幂等切面
-├── config             # 自动配置
-│   ├── LockAutoConfiguration  # 自动配置类
-│   └── LockProperties        # 配置属性
-├── support            # 锁实现
-│   ├── factory        # 锁工厂
-│   ├── memory         # 内存锁实现
-│   ├── redis          # Redis锁实现
-│   ├── redisson       # Redisson锁实现
-│   └── model          # 锁模型
-├── utils              # 工具类
-│   ├── LockUtils      # 锁工具类（核心API）
-│   ├── LockKeyUtils   # Key生成工具
-│   └── LockInfoUtils  # 锁信息工具
-└── exception          # 异常定义
-    ├── LockTimeoutException     # 锁超时异常
-    └── IdempotentException      # 幂等异常
+
+### ❌ 避免做法
+
+```java
+// 1. 避免使用固定锁 key（会导致所有请求串行）
+@GlobalLock(key = "'lockKey'")  // ❌
+
+// 2. 避免 leaseTime 小于业务执行时间
+@GlobalLock(waitTime = 1, leaseTime = 5)  // ❌ 业务可能需要10秒
+
+// 3. 避免在锁内执行耗时操作
+LockUtils.runInLock(key, () -> {
+    Thread.sleep(10000);  // ❌ 应该缩短锁持有时间
+});
 ```
 
-### 设计模式
+## 常见问题
 
-- **工厂模式**：通过 LockFactory 创建不同类型的锁
-- **策略模式**：支持多种锁实现策略
-- **模板方法**：统一的加锁流程，不同的实现细节
-- **静态工具类**：LockUtils 提供简洁的静态 API
+### 编程式和注解式如何选择？
 
-## 快速对比
+- **编程式（推荐）**：适合复杂业务，灵活性高，便于异常处理
+- **注解式**：适合简单场景，代码简洁，适合纯粹的同步需求
 
-| 特性 | Redis | Redisson | Memory |
-|------|-------|----------|--------|
-| 分布式支持 | ✅ | ✅ | ❌ |
-| 高可用 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐ |
-| 性能 | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| 易用性 | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| 依赖 | RedisTemplate | Redisson | 无 |
-| 适用场景 | 已有Redis项目 | 需要高级功能 | 单机/测试 |
+### 锁的 key 应该如何设计？
 
-## 使用建议
+- ❌ **错误**：使用固定值 `"lockKey"`，会导致所有请求串行
+- ✅ **正确**：使用业务 ID `"ORDER_" + orderId`，只锁定相同资源
 
-### 生产环境
+### 获取锁失败会发生什么？
 
-- **分布式部署**：推荐使用 Redis 或 Redisson
-- **高并发场景**：合理设计锁粒度，避免锁冲突
-- **关键业务**：使用编程式，便于异常处理
+- **编程式**：抛出 `LockTimeoutException`，可以 try-catch 处理
+- **注解式（@GlobalLock）**：可配置 `timeoutFallback` 降级方法
+- **注解式（@Idempotent）**：抛出 `IdempotentException`，提示重复请求
 
-### 测试环境
+## 总结
 
-- **单元测试**：使用 Memory 锁，无需外部依赖
-- **集成测试**：使用实际的 Redis，验证分布式特性
+molandev-lock 提供了：
 
-### 最佳实践
-
-1. **锁粒度**：使用业务 ID 作为锁 key，避免全局锁
-2. **超时时间**：waitTime 10-30秒，leaseTime 根据业务时长设置
-3. **异常处理**：编程式使用 try-catch，注解式使用降级策略
-4. **性能优化**：避免在锁内执行耗时操作
-
-## 下一步
-
-- [快速开始](./getting-started.md) - 5分钟快速上手
-- [注解使用](./annotation.md) - @GlobalLock 和 @Idempotent 详解
-- [编程式使用](./programming.md) - LockUtils 工具类详解
-- [实现原理](./implementation.md) - 分布式锁实现原理
-
-## 相关链接
-
-- [Redis 分布式锁](https://redis.io/topics/distlock)
-- [Redisson 官方文档](https://github.com/redisson/redisson)
+- ✅ 多种锁实现（Memory/Redis/Redisson）
+- ✅ 编程式和注解式两种使用方式
+- ✅ 幂等控制，防止重复提交
+- ✅ 超时降级，优雅处理并发
+- ✅ 项目实战：任务调度、文档摄入等场景

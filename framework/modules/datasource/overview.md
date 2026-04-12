@@ -1,106 +1,240 @@
 # 多数据源模块概览
 
-`molandev-datasource` 是一个专为单体与微服务混合部署场景设计的动态数据源解决方案。它基于**连接代理模式**和 MyBatis 拦截器实现，支持根据 Mapper 的包名自动切换物理数据库，并支持在同一事务内访问多个数据源。
+`molandev-datasource` 是一个专为单体与微服务混合部署场景设计的动态数据源解决方案。基于**连接代理模式**和 MyBatis 拦截器实现，支持根据 Mapper 的包名自动切换物理数据库，并支持在同一事务内访问多个数据源。
 
 ## 核心特性
 
-### ✅ 包名路由 (Package-based Routing)
+- ✅ **包名路由**：根据 Mapper 接口所在包名自动切换数据源，无需任何注解
+- ✅ **最长匹配优先**：支持包名嵌套，自动选择最具体的配置
+- ✅ **跨库事务**：连接代理模式实现同一事务内访问多数据源
+- ✅ **通用连接池**：支持 HikariCP、Druid、DBCP2 等任意连接池
+- ✅ **零侵入**：业务代码无需任何修改，配置驱动
 
-- **自动切换**：根据 Mapper 接口所在的包名，自动路由到对应的数据源。
-- **最长匹配优先**：支持包名嵌套，自动选择匹配路径最长的配置（例如 `com.molandev.order` 优先于 `com.molandev`）。
-- **无侵入**：不需要在业务代码或 Mapper 上添加任何注解。
+## 工作原理
 
-### ✅ 混合部署支持
+```mermaid
+sequenceDiagram
+    participant Service as 业务代码
+    participant Mapper as MyBatis Mapper
+    participant Interceptor as DynamicDataSourceInterceptor
+    participant Context as DataSourceContextHolder
+    participant DS as DynamicDataSource
+    participant Proxy as ConnectionProxy
+    participant DB as 物理数据库
 
-- **单体/微服务兼容**：开发一套代码，通过配置即可支持单体部署（多库连接）或微服务部署（单库连接）。
-- **配置隔离**：每个数据源拥有独立的连接池配置。
-
-### ✅ 通用连接池支持
-
-- **任意连接池**：支持 HikariCP、Druid、DBCP2 等市面上所有的数据库连接池。
-- **动态注入**：通过 `pool` 配置项，利用反射自动将属性注入到对应的连接池实例中。
-
-### ✅ 智能主从/默认数据源
-
-- **Primary 机制**：支持通过 `primary: true` 指定主数据源。
-- **自动兜底**：若未指定主数据源，自动选择配置中的第一个作为默认源。
-
-## 技术架构
-
-### 核心组件
-
-```
-molandev-datasource
-├── DataSourceContextHolder       # 数据源上下文，管理当前线程的连接Key
-├── DynamicDataSource            # 核心数据源类，返回代理连接
-├── ConnectionProxy              # 连接代理，实现跨数据源事务支持
-├── DynamicDataSourceInterceptor   # MyBatis 拦截器，执行包名解析与切换
-├── DataSourceProperties          # 配置属性类
-├── ConditionalOnMolandevDataSource # 条件注解
-├── OnMolandevDataSourceCondition  # 条件判断逻辑
-└── DynamicDataSourceAutoConfiguration # 自动配置类
+    Service->>Mapper: 调用方法
+    Mapper->>Interceptor: 拦截 SQL 执行
+    Interceptor->>Interceptor: 提取 Mapper 包名
+    Interceptor->>Context: 最长匹配，设置数据源 Key
+    Interceptor->>DS: getConnection()
+    DS->>Proxy: 返回代理 Connection
+    Proxy->>DB: 执行 SQL 时获取真实连接
+    Note over Proxy,DB: 延迟路由，执行时才拿真实连接
+    DB-->>Service: 返回结果
+    Note over Interceptor: finally 清除上下文
 ```
 
-### 实现原理
+## 快速开始
 
-1. **拦截请求**：MyBatis 拦截器拦截所有的 SQL 执行请求。
-2. **解析包名**：获取当前 Mapper 的完整类名，提取包名。
-3. **匹配数据源**：根据配置中的 `packages` 映射关系查找目标数据源 Key。
-4. **设置上下文**：将 Key 存入 `ThreadLocal`。
-5. **返回代理连接**：`DynamicDataSource.getConnection()` 返回一个代理的 `Connection` 对象。
-6. **延迟路由**：代理连接在执行实际 SQL 方法时，根据当前上下文获取对应数据源的真实连接。
-7. **统一管理**：事务提交/回滚时，代理连接会对所有访问过的数据源连接执行相同操作。
+### 1. 引入依赖
 
-## 使用建议
+```xml
+<dependency>
+    <groupId>com.molandev</groupId>
+    <artifactId>molandev-datasource</artifactId>
+    <version>${molandev.version}</version>
+</dependency>
+```
 
-### 🎯 微服务合并场景
+### 2. 配置多数据源
 
-当为了降低运维成本，将原本多个微服务合并为一个单体服务运行，但又希望保留物理数据库隔离时，该模块是最佳选择。
+```yaml
+molandev:
+  datasource:
+    sys:                              # 数据源名称
+      url: jdbc:postgresql://localhost:5432/molandev_base
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+      primary: true                   # 标记为主数据源
+      packages:
+        - com.molandev.base           # 该包下的 Mapper 使用此数据源
 
-### 🎯 性能优化
+    knowledge:                        # 第二个数据源
+      url: jdbc:postgresql://localhost:5432/molandev_kl
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+      packages:
+        - com.molandev.knowledge      # 该包下的 Mapper 使用此数据源
+```
 
-- 合理规划 Mapper 的包结构，避免频繁的数据源切换。
-- 跨库事务会为每个数据源维护一个连接，避免在事务中访问过多数据源。
+### 3. 按包名组织 Mapper
 
-### ⚠️ 事务支持
+```
+com.molandev.base
+├── mapper
+│   ├── SysUserMapper.java          ← 使用 sys 数据源
+│   └── SysRoleMapper.java          ← 使用 sys 数据源
 
-**单库事务**：
-- Spring 的 `@Transactional` 注解**完全支持**，行为与传统单数据源一致。
-- 在一个事务内访问同一数据源的多个 Mapper，事务管理完全可靠。
+com.molandev.knowledge
+├── mapper
+│   ├── KlDocumentMapper.java       ← 使用 knowledge 数据源
+│   └── KlChunkMapper.java          ← 使用 knowledge 数据源
+```
 
-**跨库事务支持**：
+**无需在 Mapper 上添加任何注解**，框架根据包名自动路由。
 
-✅ 本模块通过**连接代理模式**实现了跨数据源事务支持：
+## 项目中的实际应用
+
+### 4 个数据源隔离
+
+**配置位置：** `molandev-standalone-service/src/main/resources/application-pg.yml`
+
+项目中配置了 4 个独立数据源，实现数据隔离：
+
+```yaml
+molandev:
+  datasource:
+    sys:                                    # 系统数据库
+      url: jdbc:postgresql://localhost:5432/molandev_base
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+      primary: true
+      packages:
+        - com.molandev.base
+
+    knowledge:                              # 知识库数据库
+      url: jdbc:postgresql://localhost:5432/molandev_kl
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+      packages:
+        - com.molandev.knowledge
+
+    xiuxian:                                # 修仙游戏数据库
+      url: jdbc:postgresql://localhost:5432/molandev_xiuxian
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+      packages:
+        - com.molandev.xiuxian
+
+    vector:                                 # 向量数据库 (PgVector)
+      url: jdbc:postgresql://localhost:5432/molandev_vector
+      username: postgres
+      password: postgres
+      driver-class-name: org.postgresql.Driver
+```
+
+**数据隔离说明：**
+
+| 数据源 | 数据库 | 用途 | Mapper 包路径 |
+|--------|--------|------|--------------|
+| `sys` | `molandev_base` | 用户、角色、菜单、字典、文件等系统管理 | `com.molandev.base.*` |
+| `knowledge` | `molandev_kl` | 知识库文档、分片、检索 | `com.molandev.knowledge.*` |
+| `xiuxian` | `molandev_xiuxian` | 修仙游戏业务数据 | `com.molandev.xiuxian.*` |
+| `vector` | `molandev_vector` | 向量存储（AI 知识库检索） | 无 Mapper，PgVector 专用 |
+
+> 📖 **详细说明** → [快速开始文档](/cloud/guide/quick-start) 数据库配置章节
+
+### 跨数据源获取连接
+
+**代码位置：** `molandev-knowledge/.../config/PgVectorStoreAutoConfiguration.java`
+
+当需要在代码中显式获取特定数据源时，可通过 `DynamicDataSource` 的反射方法获取：
+
+```java
+public JdbcTemplate jdbcTemplate(DataSource dataSource) {
+    if (dataSource.getClass().getName().equals("com.molandev.framework.datasource.DynamicDataSource")) {
+        // 通过反射调用 getTargetDataSource 获取指定数据源
+        Method method = dataSource.getClass().getMethod("getTargetDataSource", String.class);
+        DataSource vectorDataSource = (DataSource) method.invoke(dataSource, "vector");
+
+        if (vectorDataSource == null) {
+            throw new IllegalStateException("无法从动态数据源中获取名为 'vector' 的数据源");
+        }
+        return new JdbcTemplate(vectorDataSource);
+    }
+    return new JdbcTemplate(dataSource);
+}
+```
+
+> 📖 **详细说明** → [知识库文档](/cloud/knowledge)
+
+## 事务管理
+
+### 单库事务
+
+Spring 的 `@Transactional` 注解**完全支持**，行为与传统单数据源一致：
+
+```java
+@Transactional
+public void updateUser(String userId, String name) {
+    // 操作 sys 数据源
+    userMapper.updateName(userId, name);
+    // 异常时自动回滚
+}
+```
+
+### 跨库事务
+
+在同一事务内访问多个数据源时，框架通过连接代理模式实现统一提交/回滚：
 
 ```java
 @Transactional
 public void crossDataSourceOperation() {
-    // 操作 master 库
-    userMapper.updateUserBalance(userId, amount);  
-    
-    // 操作 order 库 - ✅ 成功执行
-    orderMapper.createOrder(order);  
-    
-    // 异常时，两个数据源都会回滚
+    // 操作 sys 库
+    userMapper.updateUserBalance(userId, amount);
+
+    // 操作 knowledge 库
+    orderMapper.createOrder(order);
+
+    // 异常时两个数据源都会回滚
 }
 ```
 
-**工作原理**：
+**工作原理：**
 - 为每个访问的数据源维护一个独立的连接
 - `commit()`/`rollback()` 会应用到所有数据源
-- 异常时所有数据源统一回滚
 
-**⚠️ 限制与边界**：
-
-虽然支持跨库事务，但这**不是真正的分布式事务**：
-
+**⚠️ 限制：**
+这不是真正的分布式事务：
 1. **提交非原子性**：如果第一个数据源提交成功但第二个失败，第一个无法回滚
 2. **不适合强一致性场景**：金融交易等关键业务建议使用 Seata 或 XA 事务
 3. **适用场景**：微服务合并、读写分离、容忍最终一致性的业务
 
-详细说明请参考：[事务管理与注意事项](./transaction.md)
+## 最佳实践
 
-## 下一步
+### 包名设计
 
-- [快速开始](./getting-started.md) - 5分钟上手多数据源配置
-- [连接池配置](./pool-config.md) - 详解如何配置 Hikari/Druid 等连接池
+```
+com.molandev.base          ← 系统管理数据源（默认）
+├── mapper.sys             ← sys 库
+├── mapper.dict            ← sys 库
+
+com.molandev.knowledge     ← 知识库数据源
+├── mapper.document        ← knowledge 库
+├── mapper.search          ← knowledge 库
+```
+
+**建议：**
+- 按业务模块划分包结构
+- 同一数据源的 Mapper 放在同一包下
+- 避免跨数据源频繁访问
+
+### 锁粒度
+
+- 合理设计 Mapper 的包结构，避免频繁的数据源切换
+- 跨库事务会为每个数据源维护一个连接，避免在事务中访问过多数据源
+
+## 总结
+
+molandev-datasource 提供了：
+
+- ✅ 包名路由自动切换，零侵入
+- ✅ 最长匹配优先，支持嵌套包
+- ✅ 跨库事务支持（非原子性提交）
+- ✅ 通用连接池，支持任意连接池
+- ✅ 项目实战：4 个数据源隔离（sys/knowledge/xiuxian/vector）
